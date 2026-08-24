@@ -1,8 +1,7 @@
-"""Dataset generation defaults (industrial synthetic v0.1)."""
+"""Dataset generation defaults for industrial synthetic versions."""
 
 from __future__ import annotations
 
-# Industrial component classes (detection / ROI labels)
 COMPONENT_CLASSES = [
     "motor",
     "bearing",
@@ -14,7 +13,6 @@ COMPONENT_CLASSES = [
     "panel",
 ]
 
-# Visual conditions for generation
 CONDITIONS = [
     "normal",
     "misalignment",
@@ -23,15 +21,25 @@ CONDITIONS = [
     "structural_change",
     "obstruction",
     "surface_damage",
+    "hard_negative",
 ]
 
-SEVERITY_LEVELS = [0.0, 0.25, 0.5, 0.75, 1.0]
+VIEWS = ["front", "side", "angled", "closeup"]
+LIGHTING = ["bright", "normal", "dark", "side_light", "soft_light"]
+
+SEVERITY_LEVELS_V01 = [0.0, 0.25, 0.5, 0.75, 1.0]
+# continuous-ish severity for v0.2
+SEVERITY_LEVELS_V02 = [0.0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 1.0]
 
 DEFAULT_SEED = 42
 DEFAULT_IMAGE_SIZE = (640, 480)
-DEFAULT_N_PER_CONDITION = 24  # small, expandable
+DEFAULT_N_PER_CONDITION = 24
+DEFAULT_N_PER_CONDITION_V02 = 16
+
 TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
 TEST_RATIO = 0.15
 
-DATASET_VERSION = "industrial_dataset_v0.1"
+DATASET_VERSION_V01 = "industrial_dataset_v0.1"
+DATASET_VERSION_V02 = "industrial_dataset_v0.2"
+DATASET_VERSION = DATASET_VERSION_V01  # backward-compatible default

@@ -18,6 +18,8 @@ FIELDS = [
     "synthetic",
     "camera_angle",
     "lighting",
+    "view",
+    "hard_negative",
 ]
 
 
