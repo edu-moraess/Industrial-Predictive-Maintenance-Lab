@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+# Injeta a raiz do repositório no PATH para garantir importações absolutas
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 import time
 import streamlit as st
 import pandas as pd
@@ -18,7 +26,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inicialização de Banco e ML Engine
+# Cache da pipeline de ML
 @st.cache_resource
 def load_ml_pipeline():
     repo = DatabaseRepository()
@@ -28,13 +36,12 @@ def load_ml_pipeline():
 
 repo, anomaly_detector, classifier = load_ml_pipeline()
 
-# Gerenciamento de Estado da Simulação (Streamlit Session State)
+# Controle do estado da simulação no Streamlit
 if "simulation_running" not in st.session_state:
     st.session_state.simulation_running = False
 if "virtual_machine" not in st.session_state:
     st.session_state.virtual_machine = VirtualMachine("MACHINE_001")
 
-# Sidebar - Controles de Simulação em Tempo Real
 st.sidebar.title("⚙️ Simulação em Tempo Real")
 
 machine_id = st.sidebar.text_input("ID da Máquina", value="MACHINE_001")
@@ -56,7 +63,6 @@ selected_failure = st.sidebar.selectbox(
     index=0
 )
 
-# Atualiza a condição da máquina virtual
 st.session_state.virtual_machine.set_condition(
     MachineState(selected_state),
     FailureMode(selected_failure)
@@ -80,26 +86,21 @@ if col_btn3.button("🔄 Reset"):
 refresh_interval = st.sidebar.slider("Intervalo de Atualização (s)", 0.5, 5.0, 1.0)
 history_limit = st.sidebar.slider("Histórico Visível", 20, 200, 50)
 
-# Execução do Ciclo de Simulação se Ativo
+# Geração de telemetria se o loop estiver ativo
 if st.session_state.simulation_running:
-    # Gera novo frame de telemetria
     telemetry = st.session_state.virtual_machine.generate_telemetry()
     repo.upsert_machine(machine_id=machine_id, status=telemetry["state"])
     repo.save_sensor_reading(telemetry)
 
-# Processamento de Dados
 raw_readings = repo.get_historical_readings(machine_id, limit=history_limit)
 
 if not raw_readings:
-    st.warning("Aguardando inicialização dos dados da máquina. Clique em '▶ Start' para gerar telemetria.")
+    st.warning("Aguardando dados da máquina. Clique em '▶ Start' para iniciar.")
     st.stop()
 
-# Reorganiza o histórico por ordem cronológica para exibição correta dos gráficos
 raw_readings = list(reversed(raw_readings))
-
 df_features = FeatureEngineer.process_telemetry(raw_readings)
 
-# Re-treina/ajusta modelo de anomalia se houver dados suficientes
 if len(df_features) >= 10:
     anomaly_detector.train(df_features)
     classifier.train(df_features)
@@ -121,13 +122,12 @@ rul_hours = RULEstimator.estimate(health_score, latest_data)
 is_anomaly = bool(latest_data.get("is_anomaly", False))
 anomaly_score = float(latest_data.get("anomaly_score", 0.0))
 
-# Visualização no Dashboard
+# Visualização de KPIs e Gráficos
 st.title("🛠️ Industrial Predictive Maintenance Lab")
-st.caption(f"Monitoramento Ativo: **{machine_id}** | Simulação ao Vivo: **{'EXECUTANDO 🟢' if st.session_state.simulation_running else 'PAUSADA 🟡'}**")
+st.caption(f"Monitoramento Ativo: **{machine_id}** | Simulação: **{'EXECUTANDO 🟢' if st.session_state.simulation_running else 'PAUSADA 🟡'}**")
 
 st.markdown("---")
 
-# Seção 1: Indicadores Principais (KPIs)
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Health Score", f"{health_score}%")
 c2.metric("Risco", risk_level)
@@ -137,7 +137,6 @@ c5.metric("RUL", f"{rul_hours} hrs")
 
 st.markdown("---")
 
-# Seção 2: Gráficos Interativos
 col_left, col_right = st.columns([1, 1])
 
 with col_left:
@@ -153,7 +152,6 @@ with col_right:
     fig_telemetry.update_layout(height=280)
     st.plotly_chart(fig_telemetry, use_container_width=True)
 
-# Loop de Auto-Refresh se a simulação estiver em execução
 if st.session_state.simulation_running:
     time.sleep(refresh_interval)
     st.rerun()
