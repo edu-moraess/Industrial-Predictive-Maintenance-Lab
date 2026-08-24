@@ -1,10 +1,8 @@
 """
-Industrial Predictive Maintenance Lab — Streamlit Control Center.
+Industrial Predictive Maintenance Lab V2 — Operations Center (Streamlit).
 
-Telemetry is generated from the official VirtualMachine simulator.
-Health / anomaly / RUL values shown here are provisional simulation
-outputs for the UI lab. Production-grade inference is available via
-the FastAPI /predict endpoint.
+Telemetry: VirtualMachine
+Inference: ml.inference_engine.InferenceEngine (same pipeline as FastAPI)
 """
 
 from __future__ import annotations
@@ -14,24 +12,22 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Ensure repository root is on sys.path so `from app.styles` works when
-# Streamlit runs this file as a script (script dir is app/, not project root).
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 
 from app.styles import INDUSTRIAL_THEME_CSS
 from app.theme import apply_industrial_plotly_theme
 from config.settings import settings
+from ml.inference_engine import InferenceEngine, InferenceResult
 from simulator.failures import FailureMode, MachineState
 from simulator.machine import VirtualMachine
 
 st.set_page_config(
-    page_title="Industrial Predictive Maintenance",
+    page_title="Industrial Operations Center",
     page_icon="\u2699\ufe0f",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -39,44 +35,57 @@ st.set_page_config(
 st.markdown(INDUSTRIAL_THEME_CSS, unsafe_allow_html=True)
 
 
-def _init_history(window: int = 20) -> Dict[str, List[float]]:
-    return {
-        "temp": list(np.random.normal(settings.BASE_TEMP, 1.0, window)),
-        "vib": list(np.random.normal(settings.BASE_VIBRATION, 0.1, window)),
-        "current": list(np.random.normal(settings.BASE_CURRENT, 0.3, window)),
-        "rpm": list(np.random.normal(settings.BASE_RPM, 10.0, window)),
-        "noise": list(np.random.normal(settings.BASE_NOISE, 1.5, window)),
-    }
+@st.cache_resource
+def load_inference_engine() -> InferenceEngine:
+    eng = InferenceEngine()
+    eng.bootstrap_from_generator(hours=6, frequency_minutes=5)
+    return eng
 
 
-if "sim_running" not in st.session_state:
-    st.session_state.sim_running = False
-if "history" not in st.session_state:
-    st.session_state.history = _init_history()
-if "last_frame" not in st.session_state:
-    st.session_state.last_frame = None
-if "vm" not in st.session_state:
-    st.session_state.vm = VirtualMachine("MACHINE_001")
+def _ensure_state() -> None:
+    if "sim_running" not in st.session_state:
+        st.session_state.sim_running = False
+    if "readings" not in st.session_state:
+        st.session_state.readings = []
+    if "last_result" not in st.session_state:
+        st.session_state.last_result = None
+    if "health_history" not in st.session_state:
+        st.session_state.health_history = []
+    if "anomaly_history" not in st.session_state:
+        st.session_state.anomaly_history = []
+    if "rul_history" not in st.session_state:
+        st.session_state.rul_history = []
+    if "vm" not in st.session_state:
+        st.session_state.vm = VirtualMachine("MACHINE_001")
 
 
+_ensure_state()
+
+try:
+    engine = load_inference_engine()
+    engine_error = None
+except Exception as exc:  # noqa: BLE001 — surface to UI
+    engine = None
+    engine_error = str(exc)
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("#### CONTROL")
     st.markdown("---")
-
     st.markdown("##### MACHINE")
     machine_id = st.selectbox(
         "Machine ID",
         ["MACHINE_001", "MACHINE_002", "MACHINE_003"],
         label_visibility="collapsed",
     )
-
     st.markdown("##### SIMULATION")
     machine_state_ui = st.selectbox(
         "Machine State",
         ["RUNNING", "IDLE", "MAINTENANCE"],
         label_visibility="collapsed",
     )
-
     st.markdown("##### FAILURE INJECTION")
     failure_mode_ui = st.selectbox(
         "Failure Mode",
@@ -89,13 +98,13 @@ with st.sidebar:
         ],
         label_visibility="collapsed",
     )
-
     st.markdown("##### TELEMETRY")
     refresh_interval = st.slider("Refresh Interval (s)", 0.5, 5.0, 2.0, 0.5)
-    history_window = st.slider("History Window", 10, 50, 20, 5)
+    history_window = st.slider("History Window", 10, 80, 30, 5)
 
     st.markdown("##### CONTROLS")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
+    step_clicked = False
     with c1:
         if st.button("START", use_container_width=True, type="primary"):
             st.session_state.sim_running = True
@@ -103,26 +112,38 @@ with st.sidebar:
         if st.button("PAUSE", use_container_width=True):
             st.session_state.sim_running = False
     with c3:
+        if st.button("STEP", use_container_width=True):
+            step_clicked = True
+    with c4:
         if st.button("RESET", use_container_width=True):
-            st.session_state.history = _init_history(history_window)
-            st.session_state.last_frame = None
+            st.session_state.readings = []
+            st.session_state.last_result = None
+            st.session_state.health_history = []
+            st.session_state.anomaly_history = []
+            st.session_state.rul_history = []
             st.session_state.vm = VirtualMachine(machine_id)
             st.session_state.sim_running = False
 
     st.markdown("---")
-    status_label = "RUNNING" if st.session_state.sim_running else "PAUSED"
-    st.markdown(f"**Status:** `{status_label}`")
-    st.caption("Simulated telemetry \u00b7 Experimental models")
-
+    st.markdown(
+        f"**Sim:** `{'RUNNING' if st.session_state.sim_running else 'PAUSED'}`"
+    )
+    if engine is not None:
+        st_status = engine.status()
+        st.markdown(
+            f"**ML:** `{'READY' if st_status.ready else 'NOT READY'}`"
+        )
+        st.caption(
+            f"Train samples: {st_status.training_samples} \u00b7 "
+            f"Acc (train): {st_status.train_accuracy if st_status.train_accuracy is not None else 'N/A'}"
+        )
+    else:
+        st.markdown("**ML:** `NOT READY`")
+        st.caption(str(engine_error))
 
 if st.session_state.vm.machine_id != machine_id:
     st.session_state.vm = VirtualMachine(machine_id)
 
-_STATE_MAP = {
-    "RUNNING": MachineState.NORMAL,
-    "IDLE": MachineState.NORMAL,
-    "MAINTENANCE": MachineState.WARNING,
-}
 _FAIL_MAP = {
     "NORMAL_OPERATION": (MachineState.NORMAL, FailureMode.NORMAL_OPERATION),
     "BEARING_FAILURE": (MachineState.CRITICAL, FailureMode.BEARING_FAILURE),
@@ -130,112 +151,42 @@ _FAIL_MAP = {
     "ELECTRICAL_FAULT": (MachineState.CRITICAL, FailureMode.ELECTRICAL_FAULT),
     "IMBALANCE": (MachineState.DEGRADING, FailureMode.IMBALANCE),
 }
-
-if failure_mode_ui in _FAIL_MAP:
-    state_enum, fail_enum = _FAIL_MAP[failure_mode_ui]
-    st.session_state.vm.set_condition(state_enum, fail_enum)
-else:
-    st.session_state.vm.set_condition(
-        _STATE_MAP.get(machine_state_ui, MachineState.NORMAL),
-        FailureMode.NORMAL_OPERATION,
-    )
+state_enum, fail_enum = _FAIL_MAP[failure_mode_ui]
+st.session_state.vm.set_condition(state_enum, fail_enum)
 
 
-def _provisional_scores(telemetry: Dict[str, Any], is_failure: bool) -> Dict[str, Any]:
-    """Provisional UI scores. Full ML pipeline lives in FastAPI /predict."""
-    temp = telemetry["temperature"]
-    vib = telemetry["vibration"]
-    current = telemetry["current"]
-
-    score = 100.0
-    vib_dev = max(0.0, (vib - settings.BASE_VIBRATION) / settings.BASE_VIBRATION)
-    temp_dev = max(0.0, (temp - settings.BASE_TEMP) / settings.BASE_TEMP)
-    curr_dev = max(0.0, (current - settings.BASE_CURRENT) / settings.BASE_CURRENT)
-    score -= min(30.0, vib_dev * 20.0)
-    score -= min(30.0, temp_dev * 25.0)
-    score -= min(20.0, curr_dev * 15.0)
-    if is_failure:
-        score = min(score, 48.0)
-    score = max(0.0, min(100.0, score))
-
-    if score >= 90:
-        risk = "HEALTHY"
-    elif score >= 70:
-        risk = "NORMAL"
-    elif score >= 50:
-        risk = "WARNING"
-    elif score >= 25:
-        risk = "CRITICAL"
-    else:
-        risk = "FAILURE RISK"
-
-    anomaly_score = min(1.0, (vib_dev + temp_dev + curr_dev) / 3.0)
-    if is_failure:
-        anomaly_score = max(anomaly_score, 0.75)
-
-    degradation_speed = 1.0 + vib_dev + temp_dev
-    rul = max(0.0, (score / 100.0) * 720.0 / degradation_speed)
-
-    return {
-        "health_score": round(score, 1),
-        "risk_level": risk,
-        "anomaly_score": round(anomaly_score, 3),
-        "is_anomaly": is_failure or anomaly_score > 0.55,
-        "rul_hours": round(rul, 1),
-    }
-
-
-if st.session_state.sim_running:
+def _run_one_cycle() -> None:
+    if engine is None or not engine.is_ready:
+        return
     frame = st.session_state.vm.generate_telemetry()
-    is_anomaly = frame["failure_mode"] != FailureMode.NORMAL_OPERATION.value
-    scores = _provisional_scores(frame, is_anomaly)
-    st.session_state.last_frame = {**frame, **scores}
-
-    hist = st.session_state.history
-    for key, sensor in [
-        ("temp", "temperature"),
-        ("vib", "vibration"),
-        ("current", "current"),
-        ("rpm", "rpm"),
-        ("noise", "noise"),
-    ]:
-        hist[key].append(frame[sensor])
-        while len(hist[key]) > history_window:
-            hist[key].pop(0)
-
-frame = st.session_state.last_frame
-has_data = frame is not None
-
-if has_data:
-    temp = frame["temperature"]
-    vib = frame["vibration"]
-    current = frame["current"]
-    rpm = frame["rpm"]
-    noise = frame["noise"]
-    health_score = frame["health_score"]
-    risk_level = frame["risk_level"]
-    anomaly_score = frame["anomaly_score"]
-    is_anomaly = frame["is_anomaly"]
-    rul_hours = frame["rul_hours"]
-    active_failure = frame["failure_mode"]
-else:
-    temp = vib = current = rpm = noise = 0.0
-    health_score = 0.0
-    risk_level = "\u2014"
-    anomaly_score = 0.0
-    is_anomaly = False
-    rul_hours = 0.0
-    active_failure = "\u2014"
+    st.session_state.readings.append(frame)
+    while len(st.session_state.readings) > history_window:
+        st.session_state.readings.pop(0)
+    result = engine.predict(st.session_state.readings, machine_id=machine_id)
+    st.session_state.last_result = result
+    st.session_state.health_history.append(result.health_score)
+    st.session_state.anomaly_history.append(result.anomaly_score)
+    st.session_state.rul_history.append(result.rul_hours)
+    for key in ("health_history", "anomaly_history", "rul_history"):
+        while len(st.session_state[key]) > history_window:
+            st.session_state[key].pop(0)
 
 
+if st.session_state.sim_running or step_clicked:
+    _run_one_cycle()
+
+result: InferenceResult | None = st.session_state.last_result
+readings: List[Dict[str, Any]] = st.session_state.readings
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
 st.markdown(
     f"""
     <div style="display:flex;justify-content:space-between;align-items:baseline;
                 border-bottom:1px solid #2A2F38;padding-bottom:10px;margin-bottom:14px;">
         <div>
-            <h2 style="font-size:1.1rem;font-weight:600;margin:0;letter-spacing:0.02em;">
-                INDUSTRIAL PREDICTIVE MAINTENANCE
-            </h2>
+            <h2 style="font-size:1.15rem;font-weight:600;margin:0;">INDUSTRIAL OPERATIONS CENTER</h2>
             <p style="font-family:SFMono-Regular,Consolas,monospace;font-size:0.75rem;
                       color:#9A9FA8;margin:2px 0 0 0;">{machine_id}</p>
         </div>
@@ -249,268 +200,260 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if not has_data:
+if engine is None:
     st.markdown(
         """
-        <div class="ind-card" style="text-align:center;padding:28px 16px;">
-            <div class="ind-card-header">NO TELEMETRY DATA</div>
-            <p style="color:#9A9FA8;font-size:0.9rem;margin:8px 0 0 0;">
-                Start the virtual machine to begin collecting simulated telemetry.
-            </p>
+        <div class="ind-card" style="text-align:center;padding:24px;">
+            <div class="ind-card-header">ML ENGINE NOT READY</div>
+            <p style="color:#9A9FA8;">Initialize failed. Check dependencies and database path.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.stop()
 
+if not readings or result is None:
+    st.markdown(
+        """
+        <div class="ind-card" style="text-align:center;padding:24px;">
+            <div class="ind-card-header">NO TELEMETRY DATA</div>
+            <p style="color:#9A9FA8;">Press START or STEP to collect simulated telemetry and run inference.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
-st.markdown(
-    f"""
-    <div class="ind-card" style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px;flex-wrap:wrap;gap:8px;">
-        <span style="font-size:0.8rem;color:#9A9FA8;">MACHINE STATUS:
-            <strong style="color:#F2F2F2;">{machine_state_ui}</strong></span>
-        <span style="font-size:0.8rem;color:#9A9FA8;">FAILURE MODE:
-            <strong style="color:{'#D95C5C' if is_anomaly else '#4CAF78'};">{active_failure}</strong></span>
-        <span style="font-size:0.8rem;color:#9A9FA8;">ANOMALY STATUS:
-            <strong style="color:{'#D95C5C' if is_anomaly else '#4CAF78'};">
-                {'ANOMALY DETECTED' if is_anomaly else 'NORMAL'}
-            </strong></span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+frame = readings[-1]
 
+# ---------------------------------------------------------------------------
+# KPI row — values from InferenceEngine only
+# ---------------------------------------------------------------------------
 k1, k2, k3, k4, k5 = st.columns(5)
-
 with k1:
-    filled = int(health_score / 5)
+    filled = max(0, min(20, int(result.health_score / 5)))
     bar = "\u2588" * filled + "\u2591" * (20 - filled)
-    condition = risk_level if risk_level != "\u2014" else "UNKNOWN"
     st.markdown(
         f"""
         <div class="ind-card">
-            <div class="ind-card-header">HEALTH SCORE</div>
-            <div class="ind-card-value">{health_score} <span class="ind-card-unit">/ 100</span></div>
-            <div style="font-family:monospace;font-size:0.65rem;color:#D4A84F;margin:4px 0;">{bar}</div>
-            <div class="ind-card-desc">{condition} CONDITION</div>
+            <div class="ind-card-header">HEALTH</div>
+            <div class="ind-card-value">{result.health_score} <span class="ind-card-unit">/ 100</span></div>
+            <div style="font-family:monospace;font-size:0.65rem;color:#D4A84F;">{bar}</div>
+            <div class="ind-card-desc">{result.risk_level}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
 with k2:
-    risk_cls = (
-        "badge-success"
-        if risk_level in ("HEALTHY", "NORMAL")
-        else ("badge-warning" if risk_level == "WARNING" else "badge-critical")
-    )
     st.markdown(
         f"""
         <div class="ind-card">
-            <div class="ind-card-header">RISK LEVEL</div>
-            <div class="ind-card-value" style="font-size:1.2rem;padding-top:4px;">
-                <span class="badge {risk_cls}">{risk_level}</span>
-            </div>
-            <div class="ind-card-desc">Operational risk status</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with k3:
-    anom_cls = "badge-critical" if is_anomaly else "badge-success"
-    st.markdown(
-        f"""
-        <div class="ind-card">
-            <div class="ind-card-header">ANOMALY SCORE</div>
-            <div class="ind-card-value">{anomaly_score:.3f}</div>
+            <div class="ind-card-header">ANOMALY</div>
+            <div class="ind-card-value">{result.anomaly_score:.3f}</div>
             <div class="ind-card-desc">
-                <span class="badge {anom_cls}">{'ACTIVE' if is_anomaly else 'NOMINAL'}</span>
+                <span class="badge {'badge-critical' if result.is_anomaly else 'badge-success'}">
+                    {'ACTIVE' if result.is_anomaly else 'NOMINAL'}
+                </span>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
+with k3:
+    st.markdown(
+        f"""
+        <div class="ind-card">
+            <div class="ind-card-header">RUL (EXPERIMENTAL)</div>
+            <div class="ind-card-value">{result.rul_hours:.0f} <span class="ind-card-unit">HRS</span></div>
+            <div class="ind-card-desc">Synthetic degradation model</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 with k4:
-    pred = active_failure if is_anomaly else "NONE"
     st.markdown(
         f"""
         <div class="ind-card">
             <div class="ind-card-header">PREDICTED FAILURE</div>
-            <div class="ind-card-value" style="font-size:0.95rem;padding-top:6px;
-                 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{pred}</div>
-            <div class="ind-card-desc">Experimental classification</div>
+            <div class="ind-card-value" style="font-size:0.95rem;padding-top:6px;">{result.failure_mode}</div>
+            <div class="ind-card-desc">{result.failure_probability:.1f}% confidence</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
 with k5:
+    gt = result.ground_truth_failure or "\u2014"
+    match = (
+        "CORRECT"
+        if result.prediction_correct is True
+        else ("MISMATCH" if result.prediction_correct is False else "N/A")
+    )
     st.markdown(
         f"""
         <div class="ind-card">
-            <div class="ind-card-header">RUL</div>
-            <div class="ind-card-value">{rul_hours:.0f} <span class="ind-card-unit">HRS</span></div>
-            <div class="ind-card-desc">Estimated Remaining Useful Life</div>
+            <div class="ind-card-header">GROUND TRUTH</div>
+            <div class="ind-card-value" style="font-size:0.95rem;padding-top:6px;">{gt}</div>
+            <div class="ind-card-desc">{match} \u00b7 {result.inference_ms:.1f} ms</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-st.markdown("#### TELEMETRY")
-st.caption("SIMULATED TELEMETRY \u00b7 units are synthetic reference values (\u00b0C, mm/s, A, RPM, dB)")
+# ---------------------------------------------------------------------------
+# ML System Status
+# ---------------------------------------------------------------------------
+st.markdown("#### ML SYSTEM STATUS")
+ms = engine.status()
+mcols = st.columns(4)
+mcols[0].markdown(
+    f'<div class="ind-card"><div class="ind-card-header">ENGINE</div>'
+    f'<div class="ind-card-value" style="font-size:1rem;">{"ONLINE" if ms.ready else "OFFLINE"}</div></div>',
+    unsafe_allow_html=True,
+)
+mcols[1].markdown(
+    f'<div class="ind-card"><div class="ind-card-header">ISOLATION FOREST</div>'
+    f'<div class="ind-card-value" style="font-size:1rem;">{ms.isolation_forest}</div></div>',
+    unsafe_allow_html=True,
+)
+mcols[2].markdown(
+    f'<div class="ind-card"><div class="ind-card-header">RANDOM FOREST</div>'
+    f'<div class="ind-card-value" style="font-size:1rem;">{ms.random_forest}</div></div>',
+    unsafe_allow_html=True,
+)
+mcols[3].markdown(
+    f'<div class="ind-card"><div class="ind-card-header">TRAINING SAMPLES</div>'
+    f'<div class="ind-card-value" style="font-size:1rem;">{ms.training_samples}</div>'
+    f'<div class="ind-card-desc">Last: {ms.last_training or "N/A"}</div></div>',
+    unsafe_allow_html=True,
+)
 
-t1, t2, t3, t4, t5 = st.columns(5)
-_sensor_cards = [
-    (t1, "Temperature", f"{temp:.1f}", "\u00b0C"),
-    (t2, "Vibration", f"{vib:.2f}", "mm/s"),
-    (t3, "Current", f"{current:.1f}", "A"),
-    (t4, "RPM", f"{rpm:.0f}", "RPM"),
-    (t5, "Noise", f"{noise:.1f}", "dB"),
-]
-for col, label, value, unit in _sensor_cards:
+# ---------------------------------------------------------------------------
+# Live sensors
+# ---------------------------------------------------------------------------
+st.markdown("#### LIVE SENSOR MONITORING")
+st.caption("SIMULATED TELEMETRY \u00b7 baselines from config/settings.py")
+
+s1, s2, s3, s4, s5 = st.columns(5)
+for col, label, val, unit, base in [
+    (s1, "Temperature", frame["temperature"], "\u00b0C", settings.BASE_TEMP),
+    (s2, "Vibration", frame["vibration"], "mm/s", settings.BASE_VIBRATION),
+    (s3, "Current", frame["current"], "A", settings.BASE_CURRENT),
+    (s4, "RPM", frame["rpm"], "RPM", settings.BASE_RPM),
+    (s5, "Noise", frame["noise"], "dB", settings.BASE_NOISE),
+]:
     col.markdown(
         f"""
         <div class="ind-card" style="padding:10px;">
             <div class="ind-card-header">{label}</div>
-            <div class="ind-card-value" style="font-size:1.1rem;">
-                {value} <span class="ind-card-unit">{unit}</span>
-            </div>
+            <div class="ind-card-value" style="font-size:1.1rem;">{val:.2f}
+                <span class="ind-card-unit">{unit}</span></div>
+            <div class="ind-card-desc">Baseline {base} (simulated)</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-c_col1, c_col2 = st.columns(2)
-hist = st.session_state.history
+temps = [r["temperature"] for r in readings]
+vibs = [r["vibration"] for r in readings]
+currs = [r["current"] for r in readings]
 
-with c_col1:
-    fig_tv = go.Figure()
-    fig_tv.add_trace(
-        go.Scatter(y=hist["temp"], name="Temperature", line=dict(color="#D4A84F", width=1.5))
-    )
-    fig_tv.add_trace(
-        go.Scatter(
-            y=hist["vib"], name="Vibration", line=dict(color="#9A9FA8", width=1.5), yaxis="y2"
-        )
-    )
-    fig_tv.update_layout(
+g1, g2 = st.columns(2)
+with g1:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=temps, name="Temperature", line=dict(color="#D4A84F", width=1.5)))
+    fig.add_hline(y=settings.BASE_TEMP, line_dash="dot", line_color="#9A9FA8",
+                  annotation_text="SIMULATED BASELINE")
+    fig.add_trace(go.Scatter(y=vibs, name="Vibration", line=dict(color="#9A9FA8", width=1.5), yaxis="y2"))
+    fig.update_layout(
         yaxis=dict(title="Temp (\u00b0C)"),
         yaxis2=dict(title="Vib (mm/s)", overlaying="y", side="right"),
     )
-    apply_industrial_plotly_theme(fig_tv, height=240)
-    st.plotly_chart(fig_tv, use_container_width=True)
+    apply_industrial_plotly_theme(fig, height=260)
+    st.plotly_chart(fig, use_container_width=True)
 
-with c_col2:
-    fig_cn = go.Figure()
-    fig_cn.add_trace(
-        go.Scatter(y=hist["current"], name="Current", line=dict(color="#4CAF78", width=1.5))
-    )
-    fig_cn.add_trace(
-        go.Scatter(
-            y=hist["noise"], name="Noise", line=dict(color="#9A9FA8", width=1.5), yaxis="y2"
-        )
-    )
-    fig_cn.update_layout(
-        yaxis=dict(title="Current (A)"),
-        yaxis2=dict(title="Noise (dB)", overlaying="y", side="right"),
-    )
-    apply_industrial_plotly_theme(fig_cn, height=240)
-    st.plotly_chart(fig_cn, use_container_width=True)
+with g2:
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(y=currs, name="Current", line=dict(color="#4CAF78", width=1.5)))
+    fig2.add_hline(y=settings.BASE_CURRENT, line_dash="dot", line_color="#9A9FA8",
+                   annotation_text="SIMULATED BASELINE")
+    apply_industrial_plotly_theme(fig2, height=260)
+    st.plotly_chart(fig2, use_container_width=True)
 
+# Health / Anomaly / RUL trends
+st.markdown("#### HEALTH / ANOMALY / RUL TRENDS")
+h1, h2, h3 = st.columns(3)
+with h1:
+    fh = go.Figure(go.Scatter(y=st.session_state.health_history, line=dict(color="#D4A84F", width=1.5), name="Health"))
+    fh.add_hrect(y0=90, y1=100, fillcolor="rgba(76,175,120,0.08)", line_width=0)
+    fh.add_hrect(y0=50, y1=70, fillcolor="rgba(217,164,65,0.08)", line_width=0)
+    fh.add_hrect(y0=0, y1=25, fillcolor="rgba(217,92,92,0.08)", line_width=0)
+    apply_industrial_plotly_theme(fh, height=220)
+    st.plotly_chart(fh, use_container_width=True)
+with h2:
+    fa = go.Figure(go.Scatter(y=st.session_state.anomaly_history, line=dict(color="#D95C5C", width=1.5), name="Anomaly"))
+    apply_industrial_plotly_theme(fa, height=220)
+    st.plotly_chart(fa, use_container_width=True)
+with h3:
+    fr = go.Figure(go.Scatter(y=st.session_state.rul_history, line=dict(color="#9A9FA8", width=1.5), name="RUL"))
+    apply_industrial_plotly_theme(fr, height=220)
+    st.caption("EXPERIMENTAL RUL \u2014 synthetic degradation model, not industrial prognosis.")
+    st.plotly_chart(fr, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# Failure diagnostics from model probabilities
+# ---------------------------------------------------------------------------
 st.markdown("#### FAILURE DIAGNOSTICS")
-
-diag_labels = [
-    "Bearing Failure",
-    "Overheating",
-    "Electrical Fault",
-    "Imbalance",
-    "Normal Operation",
-]
-if active_failure == "BEARING_FAILURE":
-    probs = [88.5, 6.2, 3.1, 1.5, 0.7]
-elif active_failure == "OVERHEATING":
-    probs = [4.1, 89.3, 4.2, 1.4, 1.0]
-elif active_failure == "ELECTRICAL_FAULT":
-    probs = [3.0, 4.5, 87.0, 3.5, 2.0]
-elif active_failure == "IMBALANCE":
-    probs = [5.0, 3.0, 2.5, 86.0, 3.5]
-else:
-    probs = [2.1, 1.5, 1.0, 0.5, 94.9]
-
-pairs = sorted(zip(probs, diag_labels), reverse=True)
-probs_s, labels_s = zip(*pairs)
-
-fig_diag = go.Figure(
+probs = result.failure_probabilities
+labels = list(probs.keys())
+values = [probs[k] for k in labels]
+order = sorted(zip(values, labels), reverse=True)
+values_s, labels_s = zip(*order) if order else ([], [])
+figd = go.Figure(
     go.Bar(
-        x=list(probs_s),
+        x=list(values_s),
         y=list(labels_s),
         orientation="h",
-        marker_color=["#D95C5C" if p > 50 else "#2A2F38" for p in probs_s],
+        marker_color=["#D95C5C" if v == max(values_s) else "#2A2F38" for v in values_s],
     )
 )
-fig_diag.update_layout(xaxis=dict(title="Probability (%)", range=[0, 100]))
-apply_industrial_plotly_theme(fig_diag, height=200)
-st.plotly_chart(fig_diag, use_container_width=True)
+figd.update_layout(xaxis=dict(title="Model probability (%)", range=[0, 100]))
+apply_industrial_plotly_theme(figd, height=220)
+st.plotly_chart(figd, use_container_width=True)
 
-m1, m2 = st.columns(2)
-
-with m1:
-    st.markdown("#### MACHINE CONDITION")
+# ---------------------------------------------------------------------------
+# Maintenance + digital twin (2D schematic)
+# ---------------------------------------------------------------------------
+d1, d2 = st.columns(2)
+with d1:
+    st.markdown("#### MAINTENANCE INSIGHT")
     st.markdown(
         f"""
-        <div class="ind-card" style="font-family:SFMono-Regular,Consolas,monospace;font-size:0.75rem;">
-            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2A2F38;">
-                <span style="color:#9A9FA8;">Machine ID</span>
-                <span style="color:#F2F2F2;">{machine_id}</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2A2F38;">
-                <span style="color:#9A9FA8;">State</span>
-                <span style="color:#D4A84F;">{machine_state_ui}</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2A2F38;">
-                <span style="color:#9A9FA8;">Failure Mode</span>
-                <span style="color:{'#D95C5C' if is_anomaly else '#4CAF78'};">{active_failure}</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2A2F38;">
-                <span style="color:#9A9FA8;">Health / Risk</span>
-                <span style="color:#F2F2F2;">{health_score} / {risk_level}</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;padding:4px 0;">
-                <span style="color:#9A9FA8;">RUL (est.)</span>
-                <span style="color:#F2F2F2;">{rul_hours:.0f} hrs</span>
-            </div>
+        <div class="ind-card">
+            <div style="margin-bottom:8px;"><span class="badge badge-info">FROM INFERENCE ENGINE</span></div>
+            <p style="color:#F2F2F2;margin:0 0 8px 0;">{result.maintenance_recommendation}</p>
+            <p style="font-size:0.75rem;color:#9A9FA8;margin:0;">
+                Risk: {result.risk_level} \u00b7 Predicted: {result.failure_mode}
+                ({result.failure_probability:.1f}%) \u00b7 GT: {result.ground_truth_failure or 'N/A'}
+            </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-with m2:
-    st.markdown("#### MAINTENANCE INSIGHT")
-    if health_score >= 90:
-        insight = "No immediate maintenance action required."
-        badge = "badge-success"
-    elif health_score >= 70:
-        insight = "Monitor vibration and temperature trend."
-        badge = "badge-info"
-    elif health_score >= 50:
-        insight = "Maintenance inspection recommended."
-        badge = "badge-warning"
-    else:
-        insight = "Immediate maintenance intervention recommended."
-        badge = "badge-critical"
-
+with d2:
+    st.markdown("#### MACHINE DIGITAL TWIN (SCHEMATIC)")
+    bearing_color = "#D95C5C" if "BEARING" in result.failure_mode else "#4CAF78"
+    motor_color = "#D95C5C" if "ELECTRICAL" in result.failure_mode or "OVERHEAT" in result.failure_mode else "#4CAF78"
+    shaft_color = "#D95C5C" if "IMBALANCE" in result.failure_mode else "#4CAF78"
     st.markdown(
         f"""
-        <div class="ind-card" style="padding:16px;">
-            <div style="margin-bottom:6px;">
-                <span class="badge {badge}">EXPERIMENTAL ADVISORY</span>
-            </div>
-            <p style="font-size:0.85rem;color:#F2F2F2;margin:0 0 8px 0;">{insight}</p>
-            <p style="font-size:0.7rem;color:#9A9FA8;margin:0;">
-                Simulation-based estimate. Not a real industrial prognosis.
-            </p>
+        <div class="ind-card" style="font-family:monospace;font-size:0.8rem;line-height:1.6;">
+            <div style="text-align:center;border:1px solid {motor_color};padding:8px;margin:4px 40px;">MOTOR</div>
+            <div style="text-align:center;color:#9A9FA8;">|</div>
+            <div style="text-align:center;border:1px solid {bearing_color};padding:8px;margin:4px 40px;">BEARING</div>
+            <div style="text-align:center;color:#9A9FA8;">|</div>
+            <div style="text-align:center;border:1px solid {shaft_color};padding:8px;margin:4px 40px;">SHAFT</div>
+            <p style="color:#9A9FA8;font-size:0.7rem;margin-top:10px;">Highlight driven by predicted failure mode (model output).</p>
         </div>
         """,
         unsafe_allow_html=True,
