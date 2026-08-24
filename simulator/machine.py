@@ -1,27 +1,26 @@
-import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
 from simulator.failures import MachineState, FailureMode
 from simulator.sensors import SensorSimulator
 from config.settings import settings
 
+
 class VirtualMachine:
+    """Official synthetic telemetry source for the virtual industrial asset."""
+
     def __init__(self, machine_id: str):
         self.machine_id = machine_id
         self.state = MachineState.NORMAL
         self.failure_mode = FailureMode.NORMAL_OPERATION
-        
-        # Variáveis internas para simular a progressão do tempo e degradação
         self.cycle_count = 0
         self.degradation_factor = 0.0
-        
+
     def set_condition(self, state: MachineState, failure_mode: FailureMode):
-        """Muda o estado e o modo de falha da máquina manualmente (para testes/simulação)."""
+        """Set machine state and failure mode (simulation / injection)."""
         self.state = state
         self.failure_mode = failure_mode
 
     def _calculate_degradation(self):
-        """Atualiza o fator de degradação com base no estado atual."""
         if self.state == MachineState.NORMAL:
             self.degradation_factor = 0.0
         elif self.state == MachineState.WARNING:
@@ -34,15 +33,14 @@ class VirtualMachine:
             self.degradation_factor += 2.0
 
     def generate_telemetry(self) -> Dict[str, Any]:
-        """Gera um frame de dados dos sensores baseado no estado atual da máquina."""
+        """Generate one sensor frame based on current machine condition."""
         self.cycle_count += 1
         self._calculate_degradation()
-        
-        # Modificadores baseados no tipo de falha
+
         temp_mod = 1.0
         vib_mod = 1.0
         curr_mod = 1.0
-        
+
         if self.failure_mode == FailureMode.OVERHEATING:
             temp_mod = 1.5 + self.degradation_factor
         elif self.failure_mode == FailureMode.BEARING_FAILURE:
@@ -53,9 +51,8 @@ class VirtualMachine:
         elif self.failure_mode == FailureMode.IMBALANCE:
             vib_mod = 1.5 + self.degradation_factor
 
-        # Geração dos valores usando o simulador de sensores
-        telemetry = {
-            "timestamp": datetime.utcnow().isoformat(),
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "machine_id": self.machine_id,
             "state": self.state.value,
             "failure_mode": self.failure_mode.value,
@@ -69,11 +66,9 @@ class VirtualMachine:
                 settings.BASE_CURRENT * curr_mod, noise_std=0.5
             ),
             "rpm": SensorSimulator.generate_reading(
-                settings.BASE_RPM, noise_std=15.0 # RPM costuma variar um pouco, mas cair drasticamente apenas em falha total
+                settings.BASE_RPM, noise_std=15.0
             ),
             "noise": SensorSimulator.generate_reading(
                 settings.BASE_NOISE * (vib_mod * 0.8), noise_std=2.0
-            )
+            ),
         }
-        
-        return telemetry

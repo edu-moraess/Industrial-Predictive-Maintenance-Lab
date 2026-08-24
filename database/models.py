@@ -1,12 +1,16 @@
+import os
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 
-DB_NAME = "industrial_lab.db"
+# Allow override for tests / containers; default next to project root
+_DEFAULT_DB = Path(__file__).resolve().parent.parent / "industrial_lab.db"
+DB_NAME = os.environ.get("IPML_DB_PATH", str(_DEFAULT_DB))
 
 @contextmanager
 def get_db_connection():
-    """Context manager para conexões seguras com o SQLite."""
-    conn = sqlite3.connect(DB_NAME)
+    """Context manager for safe SQLite connections."""
+    conn = sqlite3.connect(DB_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -14,11 +18,10 @@ def get_db_connection():
         conn.close()
 
 def init_db():
-    """Cria as tabelas necessárias no SQLite se não existirem."""
+    """Create required SQLite tables if they do not exist."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
         
-        # Tabela de Máquinas
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS machines (
                 machine_id TEXT PRIMARY KEY,
@@ -28,7 +31,6 @@ def init_db():
             )
         """)
         
-        # Tabela de Leituras de Sensores
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sensor_readings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +47,6 @@ def init_db():
             )
         """)
         
-        # Tabela de Anomalias
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS anomalies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +58,6 @@ def init_db():
             )
         """)
         
-        # Tabela de Predições (Health Score, RUL, etc.)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +71,6 @@ def init_db():
             )
         """)
         
-        # Tabela de Eventos de Manutenção
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS maintenance_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
