@@ -13,7 +13,7 @@ import streamlit as st
 
 from app.theme import apply_industrial_plotly_theme
 from vision.anomaly import changed_area_ratio, difference_map
-from vision.config import DEFAULT_FRAME_STRIDE
+from vision.config import DEFAULT_FRAME_STRIDE, MAX_VIDEO_FRAMES_ANALYZED
 from vision.detector import ObjectDetector
 from vision.industrial_model import IndustrialAnomalyModel, industrial_model_status
 from vision.input_io import (
@@ -24,6 +24,7 @@ from vision.input_io import (
     rgb_to_bgr,
 )
 from vision.model_loader import get_vision_environment_status
+from vision.preprocessing import ensure_bgr, resize_max_side
 from vision.video import iter_sampled_frames
 from vision.visualization import bgr_to_rgb
 
@@ -131,6 +132,10 @@ def render_computer_vision() -> None:
             st.caption(env["opencv"]["error"])
         if env.get("install_hint"):
             st.code(env["install_hint"])
+        last_err = st.session_state.get("cv_last_error")
+        if last_err:
+            st.caption("Last processing error:")
+            st.code(str(last_err))
 
 
 def _render_inspection(caps: dict, ind) -> None:
@@ -267,6 +272,12 @@ def _render_inspection(caps: dict, ind) -> None:
 def _inspect_rgb(rgb, ref_rgb, ind, use_coco, show_zones) -> None:
     image_bgr = rgb_to_bgr(rgb)
     baseline_bgr = rgb_to_bgr(ref_rgb) if ref_rgb is not None else None
+    # Cap resolution for scoring/heatmap only — the original `rgb` is still
+    # shown as-is in the "Original" panel below. Large phone photos (e.g.
+    # 12MP) made the patch-wise heatmap take ~1.5s; capped to MAX_IMAGE_SIDE
+    # it drops to ~0.2s with no meaningful change in the anomaly score.
+    proc_bgr = resize_max_side(ensure_bgr(image_bgr))
+    proc_baseline_bgr = resize_max_side(ensure_bgr(baseline_bgr)) if baseline_bgr is not None else None
 
     industrial_score = None
     heat_bgr = None
@@ -278,7 +289,7 @@ def _inspect_rgb(rgb, ref_rgb, ind, use_coco, show_zones) -> None:
         st.warning("Industrial model not trained yet. Preview and reference comparison still run.")
     else:
         try:
-            industrial_score, heat_bgr = ind.score_with_heatmap(image_bgr)
+            industrial_score, heat_bgr = ind.score_with_heatmap(proc_bgr)
             visual_health = ind.visual_health(industrial_score)
         except Exception as exc:
             state = PROCESSING_ERROR
@@ -288,10 +299,10 @@ def _inspect_rgb(rgb, ref_rgb, ind, use_coco, show_zones) -> None:
 
     diff = None
     area = None
-    if baseline_bgr is not None:
+    if proc_baseline_bgr is not None:
         try:
-            diff = difference_map(image_bgr, baseline_bgr)
-            area = changed_area_ratio(image_bgr, baseline_bgr)
+            diff = difference_map(proc_bgr, proc_baseline_bgr)
+            area = changed_area_ratio(proc_bgr, proc_baseline_bgr)
         except Exception:
             pass
 
@@ -319,6 +330,11 @@ def _inspect_rgb(rgb, ref_rgb, ind, use_coco, show_zones) -> None:
         m2.metric("Visual health", f"{visual_health}/100" if visual_health is not None else "\u2014")
         m3.metric("Reference change", f"{area:.0%}" if area is not None else "\u2014")
         m4.metric("Combined", f"{fused:.3f}" if fused is not None else "\u2014")
+        if area is not None:
+            st.caption(
+                "Reference change is a raw pixel-difference ratio \u2014 lighting or "
+                "camera-angle changes can also raise it, not only physical defects."
+            )
         if industrial_score is not None:
             if industrial_score < 0.20:
                 band = "Within normal visual range"
@@ -334,9 +350,9 @@ def _inspect_rgb(rgb, ref_rgb, ind, use_coco, show_zones) -> None:
     if show_zones and ind is not None:
         from vision.roi import default_rois
 
-        h, w = image_bgr.shape[:2]
+        h, w = proc_bgr.shape[:2]
         anns = [{"class": r.name, "bbox": list(r.absolute(w, h))} for r in default_rois()]
-        scores = ind.component_scores(image_bgr, anns)
+        scores = ind.component_scores(proc_bgr, anns)
         if scores:
             st.markdown("#### Zones")
             st.dataframe(
@@ -367,10 +383,16 @@ def _inspect_rgb(rgb, ref_rgb, ind, use_coco, show_zones) -> None:
 def _inspect_video(path: str, stride: int, ind) -> None:
     times, scores, healths = [], [], []
     sample_bgr = None
+    n_seen = 0
+    truncated = False
     try:
         for fi, ts, frame in iter_sampled_frames(path, stride=stride):
             if sample_bgr is None:
                 sample_bgr = frame
+            if n_seen >= MAX_VIDEO_FRAMES_ANALYZED:
+                truncated = True
+                break
+            n_seen += 1
             if ind is None:
                 continue
             s = ind.score_array(frame)
@@ -401,6 +423,11 @@ def _inspect_video(path: str, stride: int, ind) -> None:
     m1.metric("Frames analyzed", len(scores))
     m2.metric("Average anomaly", f"{sum(scores)/len(scores):.3f}")
     m3.metric("Peak anomaly", f"{max(scores):.3f}")
+    if truncated:
+        st.caption(
+            f"Capped at {MAX_VIDEO_FRAMES_ANALYZED} sampled frames for this inspection. "
+            "Increase the frame sampling stride to cover more of a long video."
+        )
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=times, y=scores, name="Anomaly", line=dict(color="#D4A84F", width=1.5)))
