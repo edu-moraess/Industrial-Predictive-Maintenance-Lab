@@ -97,9 +97,37 @@ INDUSTRIAL_THEME_CSS = """
     .badge-critical { background-color: rgba(217, 92, 92, 0.12); color: var(--critical); border: 1px solid rgba(217, 92, 92, 0.25); }
     .badge-info { background-color: rgba(212, 168, 79, 0.12); color: var(--accent); border: 1px solid rgba(212, 168, 79, 0.25); }
 
+    /* Primary button — industrial accent, restrained */
+    .stButton > button[kind="primary"],
+    .stButton > button[data-testid="baseButton-primary"] {
+        background-color: var(--surface-secondary) !important;
+        border: 1px solid var(--accent) !important;
+        color: var(--text-primary) !important;
+        font-weight: 600 !important;
+    }
+    .stButton > button {
+        border-radius: 3px !important;
+        border: 1px solid var(--border) !important;
+        background-color: var(--surface) !important;
+        color: var(--text-primary) !important;
+    }
+
+    /* Metrics / widgets */
+    [data-testid="stMetric"] {
+        background-color: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px 12px;
+    }
+
     /* Scrollbar */
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: var(--background); }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Mobile: stack KPI cards */
+    @media (max-width: 768px) {
+        .ind-card-value { font-size: 1.2rem; }
+    }
 </style>
 """
