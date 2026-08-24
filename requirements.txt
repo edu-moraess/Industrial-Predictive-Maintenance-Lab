@@ -1,3 +1,4 @@
+# Core lab
 numpy>=1.24.0
 pandas>=2.0.0
 pydantic>=2.0.0
@@ -12,6 +13,6 @@ plotly>=5.15.0
 paho-mqtt>=2.0.0
 pillow>=10.0.0
 
-# Computer Vision lab (optional at runtime if not installed; app still starts)
+# Vision (headless only \u2014 do NOT install opencv-python alongside this)
 opencv-python-headless>=4.8.0
 ultralytics>=8.0.0

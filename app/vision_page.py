@@ -1,6 +1,6 @@
 """
 Streamlit UI for Computer Vision Inspection.
-Independent from the sensor ML Operations pipeline.
+Independent from sensor ML. Image comparison works without YOLO.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from app.theme import apply_industrial_plotly_theme
 from vision.config import DEFAULT_CONFIDENCE, DEFAULT_FRAME_STRIDE, SUPPORTED_IMAGE_EXT, SUPPORTED_VIDEO_EXT
 from vision.detector import ObjectDetector
 from vision.inspection import VisionInspectionService
-from vision.model_loader import dependency_status
+from vision.model_loader import get_vision_environment_status
 from vision.video import save_upload_to_temp
 from vision.visualization import bgr_to_rgb
 
@@ -32,18 +32,54 @@ def _get_service(confidence: float) -> VisionInspectionService:
     return VisionInspectionService(confidence=confidence, detector=det)
 
 
+def _badge(ok: bool, label_ok: str = "available", label_bad: str = "unavailable") -> str:
+    if ok:
+        return f'<span class="badge badge-success">{label_ok}</span>'
+    return f'<span class="badge badge-warning">{label_bad}</span>'
+
+
 def render_computer_vision() -> None:
     st.markdown(
         """
         <div style="border-bottom:1px solid #2A2F38;padding-bottom:10px;margin-bottom:14px;">
             <h2 style="font-size:1.15rem;font-weight:600;margin:0;">COMPUTER VISION INSPECTION</h2>
             <p style="color:#9A9FA8;font-size:0.8rem;margin:4px 0 0 0;">
-                Experimental visual inspection laboratory \u00b7 Baseline YOLO (COCO) \u00b7 Not industrial certification
+                Experimental lab \u00b7 YOLO optional (COCO baseline) \u00b7 Not industrial certification
             </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+    env = get_vision_environment_status()
+    caps = env["capabilities"]
+
+    with st.expander("Environment diagnostics (this Streamlit process)", expanded=not env["yolo_model"]["available"]):
+        st.code(f"Python: {env['python_executable']}\nVersion: {env['python_version']}")
+        st.markdown(
+            f"""
+            <div class="ind-card" style="font-size:0.85rem;line-height:1.7;">
+            NumPy { _badge(env['numpy']['available']) } {env['numpy'].get('version') or ''}<br/>
+            Pillow { _badge(env['pillow']['available']) } {env['pillow'].get('version') or ''}<br/>
+            OpenCV { _badge(env['opencv']['available']) } {env['opencv'].get('version') or ''}<br/>
+            Ultralytics { _badge(env['ultralytics']['available']) } {env['ultralytics'].get('version') or ''}<br/>
+            YOLO weights { _badge(env['yolo_model']['available'], 'loaded', 'not loaded') } {env['yolo_model'].get('name') or ''}<br/>
+            Image upload { _badge(caps['image_upload']) } \u00b7
+            Baseline compare { _badge(caps['baseline_comparison']) } \u00b7
+            Detection { _badge(caps['object_detection']) } \u00b7
+            Video { _badge(caps['video']) }
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if env["opencv"]["error"]:
+            st.caption(f"OpenCV detail: {env['opencv']['error']}")
+        if env["ultralytics"]["error"]:
+            st.caption(f"Ultralytics detail: {env['ultralytics']['error']}")
+        if env["yolo_model"]["error"] and not env["yolo_model"]["available"]:
+            st.caption(f"YOLO detail: {env['yolo_model']['error']}")
+        st.markdown("**Install into THIS interpreter:**")
+        st.code(env["install_hint"])
 
     mode = st.radio(
         "Input mode",
@@ -64,28 +100,23 @@ def render_computer_vision() -> None:
     with c3:
         use_tracking = st.checkbox("Tracking (video)", value=True, key="cv_track")
 
-    deps = dependency_status()
     service = _get_service(conf)
 
     st.markdown("#### VISION MODEL")
     if service.model_available:
         st.markdown(
-            f'<div class="ind-card"><span class="badge badge-success">READY</span> '
+            f'<div class="ind-card"><span class="badge badge-success">YOLO AVAILABLE</span> '
             f'<span style="color:#9A9FA8;margin-left:8px;">{service.model_status()}</span></div>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            f"""
+            """
             <div class="ind-card">
-                <div class="ind-card-header">VISION MODEL NOT AVAILABLE</div>
-                <p style="color:#9A9FA8;font-size:0.85rem;">{service.model_status()}</p>
-                <p style="color:#9A9FA8;font-size:0.8rem;margin:8px 0 0 0;">
-                    ultralytics={deps['ultralytics']} \u00b7 opencv={deps['opencv']} \u00b7 pillow={deps['pillow']}<br/><br/>
-                    <strong>If you see libGL.so.1 errors:</strong><br/>
-                    <code>pip uninstall opencv-python opencv-contrib-python -y</code><br/>
-                    <code>pip install opencv-python-headless ultralytics pillow</code><br/><br/>
-                    Then <strong>restart Streamlit</strong>. Image baseline comparison works with Pillow even without YOLO.
+                <div class="ind-card-header">YOLO OPTIONAL \u2014 NOT LOADED</div>
+                <p style="color:#9A9FA8;font-size:0.85rem;">
+                    Object detection is offline. <strong>Baseline image comparison still works</strong>
+                    if Pillow or OpenCV is available.
                 </p>
             </div>
             """,
@@ -104,19 +135,36 @@ def render_computer_vision() -> None:
         st.markdown(
             """
             <div class="ind-card">
-                <div class="ind-card-header">CAMERA INPUT</div>
-                <p style="color:#9A9FA8;">Optional / environment dependent. Prefer Image upload if camera fails.</p>
+                <div class="ind-card-header">BROWSER CAMERA (optional)</div>
+                <p style="color:#9A9FA8;font-size:0.85rem;">
+                    Uses Streamlit <code>st.camera_input</code> only \u2014 never OpenCV GUI / VideoCapture(0).
+                    If the browser blocks the camera, use <strong>Image</strong> upload instead.
+                </p>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        cam = st.camera_input("Capture (if browser permits)")
-        if cam is not None and st.button("Run Inspection", type="primary", key="cv_run_cam"):
-            with st.spinner("Analyzing image..."):
+        if not caps["image_upload"]:
+            st.warning("Cannot decode images: install Pillow or opencv-python-headless.")
+            return
+        try:
+            cam = st.camera_input("Capture (browser permission required)")
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Camera widget unavailable: {exc}")
+            st.info("Use Image mode to upload a photo.")
+            return
+        if cam is None:
+            st.caption("Snapshot unavailable until the browser provides a frame.")
+            return
+        if st.button("Run Inspection", type="primary", key="cv_run_cam"):
+            with st.spinner("Analyzing snapshot..."):
                 _run_image(service, cam.getvalue(), baseline_bytes)
         return
 
     if mode == "Image":
+        if not caps["image_upload"]:
+            st.error("Image pipeline unavailable. Install: python -m pip install pillow")
+            return
         up = st.file_uploader(
             "Upload machine photo",
             type=["jpg", "jpeg", "png", "webp", "bmp"],
@@ -142,6 +190,7 @@ def render_computer_vision() -> None:
                 _run_image(service, up.getvalue(), baseline_bytes)
         return
 
+    # Video
     up = st.file_uploader(
         "Upload machine video",
         type=["mp4", "mov", "avi", "mkv", "webm"],
@@ -152,21 +201,23 @@ def render_computer_vision() -> None:
             """
             <div class="ind-card" style="text-align:center;padding:20px;">
                 <div class="ind-card-header">NO VIDEO</div>
-                <p style="color:#9A9FA8;">Upload a video to start temporal visual analysis.</p>
+                <p style="color:#9A9FA8;">Upload a video for temporal analysis.</p>
             </div>
             """,
             unsafe_allow_html=True,
+        )
+        return
+    if not caps["video"]:
+        st.warning(
+            "Video needs OpenCV headless. "
+            "python -m pip uninstall opencv-python -y && "
+            "python -m pip install opencv-python-headless"
         )
         return
     ext = os.path.splitext(up.name)[1].lower()
     if ext not in SUPPORTED_VIDEO_EXT:
         st.error("INVALID INPUT \u2014 unsupported video type.")
         return
-    if not deps["opencv"]:
-        st.warning(
-            "Video analysis needs OpenCV. Fix libGL with: "
-            "`pip uninstall opencv-python -y && pip install opencv-python-headless`"
-        )
     if st.button("Run Inspection", type="primary", key="cv_run_vid"):
         path = save_upload_to_temp(up.getvalue(), ext)
         try:
@@ -184,32 +235,30 @@ def _run_image(service: VisionInspectionService, data: bytes, baseline: Optional
         report, original, annotated, diff = service.inspect_image(data, baseline)
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
-        st.error(f"Inspection failed: {msg}")
         if "libGL" in msg:
-            st.info(
-                "libGL fix:\n"
-                "```\n"
-                "pip uninstall opencv-python opencv-contrib-python -y\n"
-                "pip install opencv-python-headless ultralytics pillow\n"
-                "```\n"
-                "Then restart Streamlit. Or use **Image** upload with Pillow-only path."
+            st.warning(
+                "OpenCV GUI dependency detected (libGL). "
+                "Image inspection should use Pillow fallback after: "
+                "python -m pip uninstall opencv-python -y && "
+                "python -m pip install opencv-python-headless pillow"
             )
+            st.caption(msg)
+        else:
+            st.error(f"Inspection failed: {msg}")
         return
 
     st.success("Inspection completed.")
     st.markdown("#### RESULT")
     cols = st.columns(3 if diff is not None else 2)
     cols[0].image(bgr_to_rgb(original), caption="ORIGINAL", use_container_width=True)
-    cols[1].image(bgr_to_rgb(annotated), caption="DETECTION", use_container_width=True)
+    cols[1].image(bgr_to_rgb(annotated), caption="DETECTION / OVERLAY", use_container_width=True)
     if diff is not None:
         cols[2].image(
             bgr_to_rgb(diff),
             caption="VISUAL ANOMALY MAP (vs baseline)",
             use_container_width=True,
         )
-        st.caption(
-            "Anomaly map shows relative difference to the reference image \u2014 not a mechanical failure label."
-        )
+        st.caption("Relative difference to reference \u2014 not a mechanical failure diagnosis.")
 
     _render_report_cards(report)
     _render_class_charts(report)
@@ -230,11 +279,14 @@ def _run_video(
         )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
-        st.error(f"Video inspection failed: {msg}")
         if "libGL" in msg:
-            st.info(
-                "pip uninstall opencv-python -y && pip install opencv-python-headless && restart Streamlit"
+            st.warning(
+                "Video needs OpenCV headless without libGL. "
+                "python -m pip uninstall opencv-python -y && "
+                "python -m pip install opencv-python-headless"
             )
+        else:
+            st.error(f"Video inspection failed: {msg}")
         return
 
     st.success("Video analysis completed.")
@@ -245,7 +297,6 @@ def _run_video(
         c2.image(bgr_to_rgb(sample_a), caption="SAMPLE FRAME (DETECTION)", use_container_width=True)
 
     _render_report_cards(report)
-
     vm = report.video_metrics or {}
     st.markdown("#### VIDEO METRICS")
     mcols = st.columns(4)
@@ -360,7 +411,9 @@ def _render_detection_table(report) -> None:
             """
             <div class="ind-card">
                 <div class="ind-card-header">NO OBJECTS DETECTED</div>
-                <p style="color:#9A9FA8;">Try another image, lower confidence, or use baseline comparison.</p>
+                <p style="color:#9A9FA8;">
+                    YOLO offline or no COCO objects in frame. Baseline comparison may still show anomaly map.
+                </p>
             </div>
             """,
             unsafe_allow_html=True,
