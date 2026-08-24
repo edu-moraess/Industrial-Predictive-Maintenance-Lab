@@ -1,12 +1,12 @@
 import sys
 from pathlib import Path
 
-# Injeta a raiz do repositório no PATH
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Dict, Any
 import pandas as pd
 
@@ -23,6 +23,15 @@ app = FastAPI(
     title="Industrial Predictive Maintenance Lab API",
     version="1.0.0",
     description="API de telemetria, detecção de anomalias e manutenção preditiva industrial."
+)
+
+# Configuração de CORS para permitir requisições do Vite (React)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 repo = DatabaseRepository()
