@@ -15,7 +15,7 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<TelemetryPoint[]>([]);
-  const [machineId, setMachineId] = useState<string>('MACHINE_001');
+  const [machineId] = useState<string>('MACHINE_001');
   const [isSimulatingFailure, setIsSimulatingFailure] = useState<boolean>(false);
 
   const generateSensorData = useCallback((): SensorInput => {
@@ -48,10 +48,17 @@ export default function App() {
       setData(response.data);
       setError(null);
 
+      const timestamp = new Date().toLocaleTimeString('pt-BR', { 
+        hour12: false, 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+      });
+
       setHistory((prev) => [
         ...prev.slice(-19),
         {
-          time: new Date().toLocaleTimeString('pt-BR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          time: timestamp,
           temperature: parseFloat(payload.temperature.toFixed(1)),
           vibration: parseFloat(payload.vibration.toFixed(2)),
           health: response.data.health_score,
@@ -179,14 +186,14 @@ export default function App() {
           <h2 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
             <Server className="w-4 h-4 text-industrial-accent" /> Telemetria em Tempo Real (Vibração & Temp)
           </h2>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={history}>
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="99%" height="100%" debounce={50}>
+              <AreaChart key={`area-${history.length}`} data={history}>
                 <XAxis dataKey="time" stroke="#475569" fontSize={11} />
                 <YAxis stroke="#475569" fontSize={11} />
                 <Tooltip contentStyle={{ backgroundColor: '#151C28', borderColor: '#2A3447', color: '#fff' }} />
-                <Area type="monotone" dataKey="temperature" name="Temperatura (°C)" stroke="#00E5FF" fill="#00E5FF" fillOpacity={0.15} />
-                <Area type="monotone" dataKey="vibration" name="Vibração (mm/s)" stroke="#F59E0B" fill="#F59E0B" fillOpacity={0.15} />
+                <Area type="monotone" dataKey="temperature" name="Temperatura (°C)" stroke="#00E5FF" fill="#00E5FF" fillOpacity={0.15} isAnimationActive={false} />
+                <Area type="monotone" dataKey="vibration" name="Vibração (mm/s)" stroke="#F59E0B" fill="#F59E0B" fillOpacity={0.15} isAnimationActive={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -196,13 +203,13 @@ export default function App() {
           <h2 className="text-sm font-semibold text-slate-300 mb-4 flex items-center gap-2">
             <Cpu className="w-4 h-4 text-industrial-accent" /> Matriz de Probabilidade de Falha (Random Forest)
           </h2>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={probData} layout="vertical">
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="99%" height="100%" debounce={50}>
+              <BarChart key={`bar-${probData.length}`} data={probData} layout="vertical">
                 <XAxis type="number" stroke="#475569" domain={[0, 100]} fontSize={11} />
                 <YAxis dataKey="name" type="category" stroke="#475569" width={140} fontSize={10} />
                 <Tooltip contentStyle={{ backgroundColor: '#151C28', borderColor: '#2A3447', color: '#fff' }} />
-                <Bar dataKey="prob" name="Probabilidade (%)" fill="#3B82F6" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="prob" name="Probabilidade (%)" fill="#3B82F6" radius={[0, 4, 4, 0]} isAnimationActive={false} />
               </BarChart>
             </ResponsiveContainer>
           </div>
