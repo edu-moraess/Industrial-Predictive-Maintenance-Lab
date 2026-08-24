@@ -1,7 +1,7 @@
+import time
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 
 from database.repository import DatabaseRepository
 from features.engineering import FeatureEngineer
@@ -9,147 +9,151 @@ from ml.anomaly_detection import AnomalyDetector
 from ml.health_score import HealthScoreCalculator
 from ml.failure_classifier import FailureClassifier
 from ml.rul import RULEstimator
-from simulator.generator import DataGenerator
+from simulator.machine import VirtualMachine
+from simulator.failures import MachineState, FailureMode
 
-# Configuração da página Streamlit
 st.set_page_config(
     page_title="Industrial Predictive Maintenance Lab",
     page_icon="⚙️",
     layout="wide"
 )
 
-# Inicialização de banco e modelos (com cache para performance)
+# Inicialização de Banco e ML Engine
 @st.cache_resource
 def load_ml_pipeline():
     repo = DatabaseRepository()
-    generator = DataGenerator(repo)
-    
-    # Bootstrap de treino inicial
-    generator.generate_historical_dataset("MACHINE_001", hours=12, frequency_minutes=5)
-    history = repo.get_historical_readings("MACHINE_001", limit=100)
-    
-    df_features = FeatureEngineer.process_telemetry(history)
-    
     detector = AnomalyDetector()
-    detector.train(df_features)
-    
     classifier = FailureClassifier()
-    classifier.train(df_features)
-    
     return repo, detector, classifier
 
 repo, anomaly_detector, classifier = load_ml_pipeline()
 
-# Barra Lateral (Sidebar)
-st.sidebar.title("⚙️ Painel de Controle")
-machines = repo.get_machines()
-machine_list = [m["machine_id"] for m in machines] if machines else ["MACHINE_001"]
-selected_machine = st.sidebar.selectbox("Selecione a Máquina", machine_list)
+# Gerenciamento de Estado da Simulação (Streamlit Session State)
+if "simulation_running" not in st.session_state:
+    st.session_state.simulation_running = False
+if "virtual_machine" not in st.session_state:
+    st.session_state.virtual_machine = VirtualMachine("MACHINE_001")
 
-history_limit = st.sidebar.slider("Histórico de Registros", 20, 200, 50)
+# Sidebar - Controles de Simulação em Tempo Real
+st.sidebar.title("⚙️ Simulação em Tempo Real")
 
-# Processamento dos Dados em Tempo Real
-raw_readings = repo.get_historical_readings(selected_machine, limit=history_limit)
+machine_id = st.sidebar.text_input("ID da Máquina", value="MACHINE_001")
+if machine_id != st.session_state.virtual_machine.machine_id:
+    st.session_state.virtual_machine = VirtualMachine(machine_id)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎮 Painel de Injeção de Falhas")
+
+selected_state = st.sidebar.selectbox(
+    "Estado da Máquina",
+    options=[e.value for e in MachineState],
+    index=0
+)
+
+selected_failure = st.sidebar.selectbox(
+    "Modo de Falha a Injetar",
+    options=[e.value for e in FailureMode],
+    index=0
+)
+
+# Atualiza a condição da máquina virtual
+st.session_state.virtual_machine.set_condition(
+    MachineState(selected_state),
+    FailureMode(selected_failure)
+)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("⏱️ Loop de Telemetria")
+
+col_btn1, col_btn2, col_btn3 = st.sidebar.columns(3)
+
+if col_btn1.button("▶ Start"):
+    st.session_state.simulation_running = True
+
+if col_btn2.button("⏸ Pause"):
+    st.session_state.simulation_running = False
+
+if col_btn3.button("🔄 Reset"):
+    st.session_state.simulation_running = False
+    st.session_state.virtual_machine = VirtualMachine(machine_id)
+
+refresh_interval = st.sidebar.slider("Intervalo de Atualização (s)", 0.5, 5.0, 1.0)
+history_limit = st.sidebar.slider("Histórico Visível", 20, 200, 50)
+
+# Execução do Ciclo de Simulação se Ativo
+if st.session_state.simulation_running:
+    # Gera novo frame de telemetria
+    telemetry = st.session_state.virtual_machine.generate_telemetry()
+    repo.upsert_machine(machine_id=machine_id, status=telemetry["state"])
+    repo.save_sensor_reading(telemetry)
+
+# Processamento de Dados
+raw_readings = repo.get_historical_readings(machine_id, limit=history_limit)
 
 if not raw_readings:
-    st.warning("Nenhum dado encontrado para a máquina selecionada.")
+    st.warning("Aguardando inicialização dos dados da máquina. Clique em '▶ Start' para gerar telemetria.")
     st.stop()
 
-# Pipeline de Engenharia e ML
+# Reorganiza o histórico por ordem cronológica para exibição correta dos gráficos
+raw_readings = list(reversed(raw_readings))
+
 df_features = FeatureEngineer.process_telemetry(raw_readings)
+
+# Re-treina/ajusta modelo de anomalia se houver dados suficientes
+if len(df_features) >= 10:
+    anomaly_detector.train(df_features)
+    classifier.train(df_features)
+
 df_analyzed = anomaly_detector.detect(df_features)
 
 latest_data = df_analyzed.iloc[-1].to_dict()
 health_score, risk_level = HealthScoreCalculator.calculate(latest_data)
-predictions, probabilities = classifier.predict(df_analyzed.tail(1))
-rul_hours = RULEstimator.estimate(health_score, latest_data)
 
-current_failure = predictions[0]
-failure_probs = probabilities[0]
+if classifier.is_fitted:
+    predictions, probabilities = classifier.predict(df_analyzed.tail(1))
+    current_failure = predictions[0]
+    failure_probs = probabilities[0]
+else:
+    current_failure = "NORMAL_OPERATION"
+    failure_probs = {e.value: 0.0 for e in FailureMode}
+
+rul_hours = RULEstimator.estimate(health_score, latest_data)
 is_anomaly = bool(latest_data.get("is_anomaly", False))
 anomaly_score = float(latest_data.get("anomaly_score", 0.0))
 
-# Header Principal
+# Visualização no Dashboard
 st.title("🛠️ Industrial Predictive Maintenance Lab")
-st.caption(f"Monitoramento Analítico da Unidade: **{selected_machine}** | Status dos Dados: Sintético / Virtual Lab")
+st.caption(f"Monitoramento Ativo: **{machine_id}** | Simulação ao Vivo: **{'EXECUTANDO 🟢' if st.session_state.simulation_running else 'PAUSADA 🟡'}**")
 
 st.markdown("---")
 
-# Seção 1: Overview (KPIs)
-col1, col2, col3, col4, col5 = st.columns(5)
-
-col1.metric("Health Score", f"{health_score}%", delta=f"{health_score - 100:.1f}%", delta_color="normal")
-col2.metric("Nível de Risco", risk_level)
-col3.metric("Status Anomalia", "DETECTADA" if is_anomaly else "NORMAL", delta=f"Score: {anomaly_score:.2f}", delta_color="inverse" if is_anomaly else "off")
-col4.metric("Diagnóstico de Falha", current_failure)
-col5.metric("RUL Estimada", f"{rul_hours} hrs")
+# Seção 1: Indicadores Principais (KPIs)
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Health Score", f"{health_score}%")
+c2.metric("Risco", risk_level)
+c3.metric("Anomalia", "DETECTADA" if is_anomaly else "NORMAL", delta=f"{anomaly_score:.2f}", delta_color="inverse" if is_anomaly else "off")
+c4.metric("Falha Prevista", current_failure)
+c5.metric("RUL", f"{rul_hours} hrs")
 
 st.markdown("---")
 
-# Seção 2: Failure Probability Breakdown & Timeline
+# Seção 2: Gráficos Interativos
 col_left, col_right = st.columns([1, 1])
 
 with col_left:
-    st.subheader("📊 Probabilidade de Falhas (ML Classifier)")
+    st.subheader("📊 Distribuição de Probabilidade de Falhas")
     df_probs = pd.DataFrame(list(failure_probs.items()), columns=["Modo de Falha", "Probabilidade (%)"])
-    fig_prob = px.bar(
-        df_probs, 
-        x="Probabilidade (%)", 
-        y="Modo de Falha", 
-        orientation="h",
-        color="Probabilidade (%)",
-        color_continuous_scale="Blues",
-        text_auto=".1f"
-    )
-    fig_prob.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False, height=300)
+    fig_prob = px.bar(df_probs, x="Probabilidade (%)", y="Modo de Falha", orientation="h", text_auto=".1f")
+    fig_prob.update_layout(showlegend=False, height=280)
     st.plotly_chart(fig_prob, use_container_width=True)
 
 with col_right:
-    st.subheader("📍 Linha de Evolução Operacional")
-    st.markdown("""
-    **Timeline do Estado Atual:**
-    """)
-    state_colors = {
-        "HEALTHY": "🟢 **Operação Saudável**",
-        "NORMAL": "🔵 **Operação Normal**",
-        "WARNING": "🟡 **Alerta Inicial** (Atenção recomendada)",
-        "CRITICAL": "🟠 **Degradação Crítica** (Ação requerida)",
-        "FAILURE RISK": "🔴 **Risco Iminente de Falha** (Parada imediata)"
-    }
-    st.info(f"Estado Identificado: {state_colors.get(risk_level, risk_level)}")
-    
-    st.progress(int(health_score) / 100)
-    st.caption("Barra de Integridade do Ativo (0% = Falha Total, 100% = Íntegro)")
+    st.subheader("📈 Telemetria: Vibração & Temperatura")
+    fig_telemetry = px.line(df_analyzed, x="timestamp", y=["vibration", "temperature"], title="Vibração (mm/s) vs Temperatura (°C)")
+    fig_telemetry.update_layout(height=280)
+    st.plotly_chart(fig_telemetry, use_container_width=True)
 
-st.markdown("---")
-
-# Seção 3: Monitoramento dos Sensores (Séries Temporais)
-st.subheader("📈 Monitoramento dos Sensores em Tempo Real")
-
-tab_temp, tab_vib, tab_curr, tab_rpm = st.tabs(["Temperatura (°C)", "Vibração (mm/s)", "Corrente (A)", "RPM / Ruído"])
-
-with tab_temp:
-    fig_temp = px.line(df_analyzed, x="timestamp", y=["temperature", "temp_rolling_mean"], title="Evolução da Temperatura")
-    st.plotly_chart(fig_temp, use_container_width=True)
-
-with tab_vib:
-    fig_vib = px.line(df_analyzed, x="timestamp", y=["vibration", "vib_rolling_mean"], title="Evolução da Vibração")
-    st.plotly_chart(fig_vib, use_container_width=True)
-
-with tab_curr:
-    fig_curr = px.line(df_analyzed, x="timestamp", y=["current", "curr_rolling_mean"], title="Consumo Elétrico (Corrente)")
-    st.plotly_chart(fig_curr, use_container_width=True)
-
-with tab_rpm:
-    fig_rpm = px.line(df_analyzed, x="timestamp", y=["rpm", "noise"], title="Velocidade e Ruído Acústico")
-    st.plotly_chart(fig_rpm, use_container_width=True)
-
-# Seção 4: Tabela de Anomalias Detectadas
-st.markdown("---")
-st.subheader("🚨 Registro Histórico de Anomalias")
-anomalies_df = df_analyzed[df_analyzed["is_anomaly"] == True][["timestamp", "temperature", "vibration", "current", "anomaly_score"]]
-
-if not anomalies_df.empty:
-    st.dataframe(anomalies_df.sort_values(by="timestamp", ascending=False), use_container_width=True)
-else:
-    st.success("Nenhuma anomalia crítica registrada no período analisado.")
+# Loop de Auto-Refresh se a simulação estiver em execução
+if st.session_state.simulation_running:
+    time.sleep(refresh_interval)
+    st.rerun()
