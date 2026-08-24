@@ -6,6 +6,7 @@ Independent from the sensor ML Operations pipeline.
 from __future__ import annotations
 
 import os
+from collections import Counter
 from typing import Optional
 
 import plotly.graph_objects as go
@@ -13,9 +14,23 @@ import streamlit as st
 
 from app.theme import apply_industrial_plotly_theme
 from vision.config import DEFAULT_CONFIDENCE, DEFAULT_FRAME_STRIDE, SUPPORTED_IMAGE_EXT, SUPPORTED_VIDEO_EXT
+from vision.detector import ObjectDetector
 from vision.inspection import VisionInspectionService
+from vision.model_loader import dependency_status
 from vision.video import save_upload_to_temp
 from vision.visualization import bgr_to_rgb
+
+
+@st.cache_resource
+def _cached_detector() -> ObjectDetector:
+    """Load YOLO once for the Streamlit process."""
+    return ObjectDetector()
+
+
+def _get_service(confidence: float) -> VisionInspectionService:
+    det = _cached_detector()
+    det.set_confidence(confidence)
+    return VisionInspectionService(confidence=confidence, detector=det)
 
 
 def render_computer_vision() -> None:
@@ -24,7 +39,7 @@ def render_computer_vision() -> None:
         <div style="border-bottom:1px solid #2A2F38;padding-bottom:10px;margin-bottom:14px;">
             <h2 style="font-size:1.15rem;font-weight:600;margin:0;">COMPUTER VISION INSPECTION</h2>
             <p style="color:#9A9FA8;font-size:0.8rem;margin:4px 0 0 0;">
-                Experimental visual inspection laboratory. Not industrial defect certification.
+                Experimental visual inspection laboratory · Baseline YOLO (COCO) · Not industrial certification
             </p>
         </div>
         """,
@@ -36,17 +51,22 @@ def render_computer_vision() -> None:
         ["Image", "Video", "Camera"],
         horizontal=True,
         label_visibility="collapsed",
+        key="cv_input_mode",
     )
 
+    st.markdown("#### CONFIGURATION")
     c1, c2, c3 = st.columns(3)
     with c1:
-        conf = st.slider("Confidence threshold", 0.1, 0.9, DEFAULT_CONFIDENCE, 0.05)
+        conf = st.slider("Confidence threshold", 0.1, 0.9, DEFAULT_CONFIDENCE, 0.05, key="cv_conf")
     with c2:
-        stride = st.select_slider("Frame sampling (video)", options=[1, 2, 5, 10], value=DEFAULT_FRAME_STRIDE)
+        stride = st.select_slider(
+            "Frame sampling (video)", options=[1, 2, 5, 10], value=DEFAULT_FRAME_STRIDE, key="cv_stride"
+        )
     with c3:
-        use_tracking = st.checkbox("Tracking (video)", value=True)
+        use_tracking = st.checkbox("Tracking (video)", value=True, key="cv_track")
 
-    service = VisionInspectionService(confidence=conf)
+    deps = dependency_status()
+    service = _get_service(conf)
 
     st.markdown("#### VISION MODEL")
     if service.model_available:
@@ -61,8 +81,11 @@ def render_computer_vision() -> None:
             <div class="ind-card">
                 <div class="ind-card-header">VISION MODEL NOT AVAILABLE</div>
                 <p style="color:#9A9FA8;font-size:0.85rem;">{service.model_status()}</p>
-                <p style="color:#9A9FA8;font-size:0.8rem;">
-                    Install optional deps: <code>pip install ultralytics opencv-python-headless</code>
+                <p style="color:#9A9FA8;font-size:0.8rem;margin:8px 0 0 0;">
+                    ultralytics={deps['ultralytics']} · opencv={deps['opencv']}<br/>
+                    Install in the same Python env as Streamlit:<br/>
+                    <code>pip install ultralytics opencv-python-headless</code><br/>
+                    Then restart Streamlit. Baseline comparison still works without YOLO.
                 </p>
             </div>
             """,
@@ -82,14 +105,15 @@ def render_computer_vision() -> None:
             """
             <div class="ind-card">
                 <div class="ind-card-header">CAMERA INPUT</div>
-                <p style="color:#9A9FA8;">Optional / environment dependent. Use Image or Video upload in this lab build.</p>
+                <p style="color:#9A9FA8;">Optional / environment dependent.</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
         cam = st.camera_input("Capture (if browser permits)")
-        if cam is not None and st.button("Run Inspection", type="primary"):
-            _run_image(service, cam.getvalue(), baseline_bytes)
+        if cam is not None and st.button("Run Inspection", type="primary", key="cv_run_cam"):
+            with st.spinner("Analyzing image..."):
+                _run_image(service, cam.getvalue(), baseline_bytes)
         return
 
     if mode == "Image":
@@ -113,11 +137,11 @@ def render_computer_vision() -> None:
         if ext not in SUPPORTED_IMAGE_EXT:
             st.error("INVALID INPUT — unsupported image type.")
             return
-        if st.button("Run Inspection", type="primary"):
-            _run_image(service, up.getvalue(), baseline_bytes)
+        if st.button("Run Inspection", type="primary", key="cv_run_img"):
+            with st.spinner("Analyzing image..."):
+                _run_image(service, up.getvalue(), baseline_bytes)
         return
 
-    # Video
     up = st.file_uploader(
         "Upload machine video",
         type=["mp4", "mov", "avi", "mkv", "webm"],
@@ -138,10 +162,11 @@ def render_computer_vision() -> None:
     if ext not in SUPPORTED_VIDEO_EXT:
         st.error("INVALID INPUT — unsupported video type.")
         return
-    if st.button("Run Inspection", type="primary"):
+    if st.button("Run Inspection", type="primary", key="cv_run_vid"):
         path = save_upload_to_temp(up.getvalue(), ext)
         try:
-            _run_video(service, path, stride, use_tracking, baseline_bytes)
+            with st.spinner("Analyzing video (sampled frames)..."):
+                _run_video(service, path, stride, use_tracking, baseline_bytes)
         finally:
             try:
                 os.remove(path)
@@ -156,14 +181,21 @@ def _run_image(service: VisionInspectionService, data: bytes, baseline: Optional
         st.error(f"Inspection failed: {exc}")
         return
 
+    st.success("Inspection completed.")
     st.markdown("#### RESULT")
     cols = st.columns(3 if diff is not None else 2)
     cols[0].image(bgr_to_rgb(original), caption="ORIGINAL", use_container_width=True)
     cols[1].image(bgr_to_rgb(annotated), caption="DETECTION", use_container_width=True)
     if diff is not None:
-        cols[2].image(bgr_to_rgb(diff), caption="DIFFERENCE MAP (vs baseline)", use_container_width=True)
+        cols[2].image(
+            bgr_to_rgb(diff),
+            caption="VISUAL ANOMALY MAP (vs baseline)",
+            use_container_width=True,
+        )
+        st.caption("Anomaly map shows relative difference to the reference image — not a mechanical failure label.")
 
     _render_report_cards(report)
+    _render_class_charts(report)
     _render_detection_table(report)
     _render_context(report)
 
@@ -183,6 +215,7 @@ def _run_video(
         st.error(f"Video inspection failed: {exc}")
         return
 
+    st.success("Video analysis completed.")
     st.markdown("#### RESULT")
     if sample_o is not None and sample_a is not None:
         c1, c2 = st.columns(2)
@@ -219,7 +252,7 @@ def _run_video(
     times = vm.get("anomaly_timestamps") or []
     if series and times and len(series) == len(times):
         st.markdown("#### VISUAL ANOMALY TIMELINE")
-        st.caption("Heuristic baseline/first-frame difference — not a calibrated defect score.")
+        st.caption("Heuristic difference vs baseline/first frame — not a calibrated defect score.")
         fig = go.Figure(
             go.Scatter(x=times, y=series, mode="lines+markers", line=dict(color="#D4A84F", width=1.5))
         )
@@ -231,7 +264,7 @@ def _run_video(
         st.markdown("#### OBJECT TRAJECTORY (APPARENT MOTION)")
         st.caption("Pixel-space path from tracking. Not physical vibration.")
         keys = list(trajectories.keys())
-        choice = st.selectbox("Object", keys)
+        choice = st.selectbox("Object", keys, key="cv_traj_obj")
         pts = trajectories[choice]
         fig_t = go.Figure(
             go.Scatter(
@@ -245,6 +278,7 @@ def _run_video(
         apply_industrial_plotly_theme(fig_t, height=260)
         st.plotly_chart(fig_t, use_container_width=True)
 
+    _render_class_charts(report)
     _render_detection_table(report)
     _render_context(report)
 
@@ -281,13 +315,39 @@ def _render_report_cards(report) -> None:
     )
 
 
+def _render_class_charts(report) -> None:
+    if not report.detections:
+        return
+    counts = Counter(d.class_name for d in report.detections)
+    confs = [d.confidence for d in report.detections]
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.markdown("#### DETECTIONS BY CLASS")
+        fig = go.Figure(
+            go.Bar(
+                x=list(counts.keys()),
+                y=list(counts.values()),
+                marker_color="#D4A84F",
+            )
+        )
+        apply_industrial_plotly_theme(fig, height=220)
+        st.plotly_chart(fig, use_container_width=True)
+    with g2:
+        st.markdown("#### CONFIDENCE DISTRIBUTION")
+        fig2 = go.Figure(go.Histogram(x=confs, nbinsx=10, marker_color="#4CAF78"))
+        fig2.update_layout(xaxis_title="Confidence", yaxis_title="Count")
+        apply_industrial_plotly_theme(fig2, height=220)
+        st.plotly_chart(fig2, use_container_width=True)
+
+
 def _render_detection_table(report) -> None:
     if not report.detections:
         st.markdown(
             """
             <div class="ind-card">
                 <div class="ind-card-header">NO OBJECTS DETECTED</div>
-                <p style="color:#9A9FA8;">Try another image/frame or lower the confidence threshold.</p>
+                <p style="color:#9A9FA8;">Try another image/frame, lower confidence, or use baseline comparison.</p>
             </div>
             """,
             unsafe_allow_html=True,

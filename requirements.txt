@@ -10,7 +10,8 @@ httpx>=0.24.0
 streamlit>=1.25.0
 plotly>=5.15.0
 paho-mqtt>=2.0.0
+pillow>=10.0.0
 
-# Optional — Computer Vision module (detection / tracking)
+# Computer Vision lab (optional at runtime if not installed; app still starts)
 opencv-python-headless>=4.8.0
 ultralytics>=8.0.0
