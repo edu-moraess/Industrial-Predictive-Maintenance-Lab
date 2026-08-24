@@ -25,6 +25,15 @@ class IndustrialAnomalyModel:
     def score_array(self, image_bgr: np.ndarray) -> float:
         return self.detector.score(image_bgr)
 
+    def score_path(self, path: Path) -> float:
+        """Score an image file on disk. Uses the same RGB->BGR convention
+        as training/train.py (_load_vector) so evaluation matches inference."""
+        from PIL import Image as PILImage
+
+        img = PILImage.open(path).convert("RGB")
+        bgr = np.asarray(img)[:, :, ::-1].copy()
+        return self.score_array(bgr)
+
     def score_with_heatmap(self, image_bgr: np.ndarray) -> Tuple[float, np.ndarray]:
         score, heat = self.detector.score_with_heatmap(image_bgr)
         return score, heatmap_to_bgr(heat)
