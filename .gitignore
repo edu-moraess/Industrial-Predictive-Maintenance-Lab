@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Tests / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Databases & local data
+*.db
+*.sqlite
+*.sqlite3
+industrial_lab.db
+
+# Logs
+*.log
+logs/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Node / React scaffold (if ever installed locally)
+node_modules/
+frontend/dist/
+frontend/build/
+.npm/
+
+# Streamlit
+.streamlit/secrets.toml
