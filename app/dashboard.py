@@ -1,7 +1,7 @@
 import streamlit as st
 import plotly.graph_objects as go
-import pandas as pd
 import numpy as np
+import time
 from datetime import datetime
 
 # Configuração da Página
@@ -12,12 +12,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Estilização CSS Dark Mode SCADA (Impede cortes de texto e formata cards)
+# Estilização CSS Dark Mode SCADA
 st.markdown("""
 <style>
     .stApp { background-color: #0B0F17; color: #E2E8F0; }
     [data-testid="stSidebar"] { background-color: #111723; border-right: 1px solid #1E293B; }
-    
     .scada-card {
         background-color: #151C28;
         border: 1px solid #1E293B;
@@ -30,7 +29,6 @@ st.markdown("""
         font-family: monospace;
         color: #94A3B8;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
     }
     .scada-value {
         font-size: 1.5rem;
@@ -47,97 +45,88 @@ st.markdown("""
 st.sidebar.markdown("### 🎛️ CONTROLE OPERACIONAL")
 machine_id = st.sidebar.selectbox("Ativo Monitorado", ["MACHINE_001", "MACHINE_002", "MACHINE_003"])
 simular_falha = st.sidebar.checkbox("Injetar Anomalia no Sistema", value=False)
-intervalo = st.sidebar.slider("Intervalo de Leitura (s)", 0.5, 5.0, 2.5)
+intervalo = st.sidebar.slider("Intervalo de Atualização (s)", 0.5, 5.0, 2.0)
 
-# Cabeçalho Principal
-st.markdown(f"## ⚡ SALA DE CONTROLE SCADA — LINHA 01")
-st.caption(f"Telemetria em tempo real · Modelo ML ativo · Unidade **{machine_id}**")
+# Inicializa histórico na sessão
+if "history_temp" not in st.session_state:
+    st.session_state.history_temp = list(np.random.normal(42, 2, 15))
+if "history_vib" not in st.session_state:
+    st.session_state.history_vib = list(np.random.normal(1.8, 0.3, 15))
 
-# Simulação de dados para visualização
+# Atualiza dados simulados a cada ciclo
 if simular_falha:
-    temp, vib, corr, rpm, ruida = 84.2, 7.8, 27.5, 1610.0, 89.0
+    temp = round(82.0 + np.random.uniform(-3, 5), 1)
+    vib = round(7.5 + np.random.uniform(-1, 2), 2)
+    corr, rpm, ruida = 27.5, 1610.0, 89.0
     health, rul, risk, anomaly = 38.5, 120.0, "CRÍTICO", "DETECTADA"
     status_color = "#F43F5E"
 else:
-    temp, vib, corr, rpm, ruida = 42.1, 1.8, 14.8, 1788.0, 53.8
+    temp = round(42.0 + np.random.uniform(-2, 2), 1)
+    vib = round(1.8 + np.random.uniform(-0.2, 0.4), 2)
+    corr, rpm, ruida = 14.8, 1788.0, 53.8
     health, rul, risk, anomaly = 94.2, 580.0, "SAUDÁVEL", "NORMAL"
     status_color = "#10B981"
+
+st.session_state.history_temp.append(temp)
+st.session_state.history_temp.pop(0)
+st.session_state.history_vib.append(vib)
+st.session_state.history_vib.pop(0)
+
+# Cabeçalho Principal
+st.markdown(f"## ⚡ SALA DE CONTROLE SCADA — LINHA 01")
+st.caption(f"Telemetria ao vivo · Modelo ML ativo · Unidade **{machine_id}**")
 
 # KPI Top Display
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.markdown(f"""
-    <div class="scada-card">
-        <div class="scada-label">Pontuação de Saúde</div>
-        <div class="scada-value" style="color: {status_color};">{health}%</div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    st.markdown(f'<div class="scada-card"><div class="scada-label">Integridade</div><div class="scada-value" style="color: {status_color};">{health}%</div></div>', unsafe_allow_html=True)
 with col2:
-    st.markdown(f"""
-    <div class="scada-card">
-        <div class="scada-label">RUL Estimado</div>
-        <div class="scada-value">{rul} <span class="scada-unit">h</span></div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    st.markdown(f'<div class="scada-card"><div class="scada-label">RUL Estimado</div><div class="scada-value">{rul} <span class="scada-unit">h</span></div></div>', unsafe_allow_html=True)
 with col3:
-    st.markdown(f"""
-    <div class="scada-card">
-        <div class="scada-label">Nível de Risco</div>
-        <div class="scada-value" style="color: {status_color};">{risk}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    st.markdown(f'<div class="scada-card"><div class="scada-label">Nível de Risco</div><div class="scada-value" style="color: {status_color};">{risk}</div></div>', unsafe_allow_html=True)
 with col4:
-    st.markdown(f"""
-    <div class="scada-card">
-        <div class="scada-label">Status Anomalia</div>
-        <div class="scada-value">{anomaly}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f'<div class="scada-card"><div class="scada-label">Status Anomalia</div><div class="scada-value">{anomaly}</div></div>', unsafe_allow_html=True)
 
-# Leituras dos Sensores de Campo (Sem texto cortado)
-st.markdown("#### 📡 Leitura de Sensores de Campo")
+# Sensores
 s1, s2, s3, s4, s5 = st.columns(5)
-
 s1.markdown(f'<div class="scada-card"><div class="scada-label">TEMP</div><div class="scada-value">{temp}<span class="scada-unit">°C</span></div></div>', unsafe_allow_html=True)
 s2.markdown(f'<div class="scada-card"><div class="scada-label">VIBRAÇÃO</div><div class="scada-value">{vib}<span class="scada-unit">mm/s</span></div></div>', unsafe_allow_html=True)
 s3.markdown(f'<div class="scada-card"><div class="scada-label">CORRENTE</div><div class="scada-value">{corr}<span class="scada-unit">A</span></div></div>', unsafe_allow_html=True)
 s4.markdown(f'<div class="scada-card"><div class="scada-label">ROTAÇÃO</div><div class="scada-value">{rpm}<span class="scada-unit">RPM</span></div></div>', unsafe_allow_html=True)
 s5.markdown(f'<div class="scada-card"><div class="scada-label">RUÍDO</div><div class="scada-value">{ruida}<span class="scada-unit">dB</span></div></div>', unsafe_allow_html=True)
 
-# Gráficos em Plotly (Escuros e Profissionais)
+# Gráficos Dinâmicos
 g1, g2 = st.columns(2)
 
-# Gráfico 1: Telemetria
-time_stamps = [datetime.now().strftime("%H:%M:%S") for _ in range(10)]
 fig_telemetria = go.Figure()
-fig_telemetria.add_trace(go.Scatter(y=[temp + np.random.randn() for _ in range(10)], name="Temperatura (°C)", line=dict(color="#00E5FF", width=2)))
-fig_telemetria.add_trace(go.Scatter(y=[vib * 10 + np.random.randn() for _ in range(10)], name="Vibração (x10 mm/s)", line=dict(color="#F59E0B", width=2)))
+fig_telemetria.add_trace(go.Scatter(y=st.session_state.history_temp, name="Temperatura (°C)", line=dict(color="#00E5FF", width=2)))
+fig_telemetria.add_trace(go.Scatter(y=st.session_state.history_vib, name="Vibração (mm/s)", line=dict(color="#F59E0B", width=2)))
 fig_telemetria.update_layout(
-    title="Tendência de Processo em Tempo Real",
+    title="Tendência de Sensores em Tempo Real",
     paper_bgcolor="#151C28", plot_bgcolor="#151C28",
-    font=dict(color="#94A3B8"), height=300, margin=dict(l=20, r=20, t=40, b=20)
+    font=dict(color="#94A3B8"), height=280, margin=dict(l=10, r=10, t=30, b=10)
 )
 
 with g1:
     st.plotly_chart(fig_telemetria, use_container_width=True)
 
-# Gráfico 2: Matriz de Falhas
 probs = [85.0 if simular_falha else 5.0, 10.0, 3.0, 2.0]
 fig_falhas = go.Figure(go.Bar(
     x=probs,
-    y=["SOPERAQUECIMENTO", "DESEQUILÍBRIO", "FALHA ELÉTRICA", "ROLAMENTO"],
+    y=["SUPERAQUECIMENTO", "DESEQUILÍBRIO", "FALHA ELÉTRICA", "ROLAMENTO"],
     orientation='h',
     marker_color=['#F43F5E' if p > 50 else '#3B82F6' for p in probs]
 ))
 fig_falhas.update_layout(
-    title="Probabilidade de Falhas (Random Forest)",
+    title="Probabilidade de Falhas (ML)",
     paper_bgcolor="#151C28", plot_bgcolor="#151C28",
-    font=dict(color="#94A3B8"), height=300, margin=dict(l=20, r=20, t=40, b=20)
+    font=dict(color="#94A3B8"), height=280, margin=dict(l=10, r=10, t=30, b=10)
 )
 
 with g2:
     st.plotly_chart(fig_falhas, use_container_width=True)
+
+# LOOP DE ATUALIZAÇÃO EM TEMPO REAL
+time.sleep(intervalo)
+st.rerun()
