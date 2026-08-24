@@ -3,6 +3,8 @@ Industrial Predictive Maintenance Lab V2 — Operations Center (Streamlit).
 
 Telemetry: VirtualMachine
 Inference: ml.inference_engine.InferenceEngine (same pipeline as FastAPI)
+
+Computer Vision is an independent module (sidebar switch).
 """
 
 from __future__ import annotations
@@ -34,6 +36,22 @@ st.set_page_config(
 )
 st.markdown(INDUSTRIAL_THEME_CSS, unsafe_allow_html=True)
 
+# Module router — Computer Vision does not depend on sensor ML bootstrap
+with st.sidebar:
+    st.markdown("#### MODULE")
+    _module = st.radio(
+        "Module",
+        ["Operations", "Computer Vision"],
+        label_visibility="collapsed",
+    )
+    st.markdown("---")
+
+if _module == "Computer Vision":
+    from app.vision_page import render_computer_vision
+
+    render_computer_vision()
+    st.stop()
+
 
 @st.cache_resource
 def load_inference_engine() -> InferenceEngine:
@@ -64,13 +82,10 @@ _ensure_state()
 try:
     engine = load_inference_engine()
     engine_error = None
-except Exception as exc:  # noqa: BLE001 — surface to UI
+except Exception as exc:  # noqa: BLE001
     engine = None
     engine_error = str(exc)
 
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("#### CONTROL")
     st.markdown("---")
@@ -178,9 +193,6 @@ if st.session_state.sim_running or step_clicked:
 result: InferenceResult | None = st.session_state.last_result
 readings: List[Dict[str, Any]] = st.session_state.readings
 
-# ---------------------------------------------------------------------------
-# Header
-# ---------------------------------------------------------------------------
 st.markdown(
     f"""
     <div style="display:flex;justify-content:space-between;align-items:baseline;
@@ -226,9 +238,6 @@ if not readings or result is None:
 
 frame = readings[-1]
 
-# ---------------------------------------------------------------------------
-# KPI row — values from InferenceEngine only
-# ---------------------------------------------------------------------------
 k1, k2, k3, k4, k5 = st.columns(5)
 with k1:
     filled = max(0, min(20, int(result.health_score / 5)))
@@ -299,9 +308,6 @@ with k5:
         unsafe_allow_html=True,
     )
 
-# ---------------------------------------------------------------------------
-# ML System Status
-# ---------------------------------------------------------------------------
 st.markdown("#### ML SYSTEM STATUS")
 ms = engine.status()
 mcols = st.columns(4)
@@ -327,9 +333,6 @@ mcols[3].markdown(
     unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------------------------
-# Live sensors
-# ---------------------------------------------------------------------------
 st.markdown("#### LIVE SENSOR MONITORING")
 st.caption("SIMULATED TELEMETRY \u00b7 baselines from config/settings.py")
 
@@ -379,7 +382,6 @@ with g2:
     apply_industrial_plotly_theme(fig2, height=260)
     st.plotly_chart(fig2, use_container_width=True)
 
-# Health / Anomaly / RUL trends
 st.markdown("#### HEALTH / ANOMALY / RUL TRENDS")
 h1, h2, h3 = st.columns(3)
 with h1:
@@ -399,9 +401,6 @@ with h3:
     st.caption("EXPERIMENTAL RUL \u2014 synthetic degradation model, not industrial prognosis.")
     st.plotly_chart(fr, use_container_width=True)
 
-# ---------------------------------------------------------------------------
-# Failure diagnostics from model probabilities
-# ---------------------------------------------------------------------------
 st.markdown("#### FAILURE DIAGNOSTICS")
 probs = result.failure_probabilities
 labels = list(probs.keys())
@@ -420,9 +419,6 @@ figd.update_layout(xaxis=dict(title="Model probability (%)", range=[0, 100]))
 apply_industrial_plotly_theme(figd, height=220)
 st.plotly_chart(figd, use_container_width=True)
 
-# ---------------------------------------------------------------------------
-# Maintenance + digital twin (2D schematic)
-# ---------------------------------------------------------------------------
 d1, d2 = st.columns(2)
 with d1:
     st.markdown("#### MAINTENANCE INSIGHT")
