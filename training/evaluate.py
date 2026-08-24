@@ -15,7 +15,14 @@ from vision.industrial_model import IndustrialAnomalyModel
 def evaluate(dataset_path: Path | None = None) -> dict:
     root = dataset_path or DATASET_PATH
     ckpt = CHECKPOINT_DIR / f"{MODEL_NAME}.npz"
-    model = IndustrialAnomalyModel.load(ckpt)
+    model = IndustrialAnomalyModel.try_load(MODEL_NAME)
+    if model is None:
+        version = MODEL_NAME.rsplit("_", 1)[-1]  # e.g. "industrial_anomaly_v0.2" -> "v0.2"
+        raise RuntimeError(
+            f"MODEL NOT TRAINED — no checkpoint at {ckpt}. "
+            f"Run: python -m dataset.generator --version {version} && "
+            f"python -m training.train --dataset-version {version}"
+        )
     rows = read_manifest(root / "dataset_manifest.csv")
     test_rows = [r for r in rows if r["split"] in ("validation", "test")]
 
