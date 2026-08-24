@@ -1,7 +1,7 @@
 """
-Industrial Predictive Maintenance Lab — FastAPI backend.
+Industrial Predictive Maintenance Lab — FastAPI backend (V2).
 
-Models are initialized explicitly via lifespan (not at import time).
+All inference goes through ml.inference_engine.InferenceEngine.
 """
 
 from __future__ import annotations
@@ -21,54 +21,26 @@ if str(ROOT_DIR) not in sys.path:
 from api.schemas import MachineResponse, PredictResponse, SensorInput
 from database.repository import DatabaseRepository
 from features.engineering import FeatureEngineer
-from ml.anomaly_detection import AnomalyDetector
-from ml.failure_classifier import FailureClassifier
-from ml.health_score import HealthScoreCalculator
-from ml.rul import RULEstimator
-from simulator.generator import DataGenerator
+from ml.inference_engine import get_engine, get_ready_engine
 
 repo = DatabaseRepository()
-anomaly_detector = AnomalyDetector()
-classifier = FailureClassifier()
-_models_ready = False
-
-
-def bootstrap_models(force: bool = False) -> None:
-    """Train Isolation Forest + Random Forest on a short synthetic history."""
-    global _models_ready
-    if _models_ready and not force:
-        return
-
-    generator = DataGenerator(repo)
-    generator.generate_historical_dataset(
-        "INIT_TRAIN_MACHINE", hours=6, frequency_minutes=5
-    )
-    history = repo.get_historical_readings("INIT_TRAIN_MACHINE", limit=100)
-
-    if history:
-        df_features = FeatureEngineer.process_telemetry(history)
-        anomaly_detector.train(df_features)
-        classifier.train(df_features)
-        _models_ready = True
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    bootstrap_models()
+    get_ready_engine()
     yield
 
 
 app = FastAPI(
     title="Industrial Predictive Maintenance Lab API",
-    version="1.0.0",
+    version="2.0.0",
     description=(
-        "Experimental API for synthetic industrial telemetry, "
-        "anomaly detection, health scoring, failure classification and RUL estimation."
+        "Experimental API for synthetic industrial telemetry and unified ML inference."
     ),
     lifespan=lifespan,
 )
 
-# Development CORS — restrict via environment in production deployments
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "*"],
@@ -79,12 +51,21 @@ app.add_middleware(
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
-def get_health_status() -> Dict[str, str]:
+def get_health_status() -> Dict[str, Any]:
+    eng = get_engine()
+    st = eng.status()
     return {
         "status": "online",
         "service": "Industrial Predictive Maintenance Engine",
-        "models_ready": str(_models_ready).lower(),
+        "version": "2.0.0",
+        "models_ready": st.ready,
+        "ml": st.to_dict(),
     }
+
+
+@app.get("/ml/status")
+def ml_status() -> Dict[str, Any]:
+    return get_engine().status().to_dict()
 
 
 @app.get("/machines", response_model=List[MachineResponse])
@@ -111,51 +92,33 @@ def get_latest_telemetry(machine_id: str):
 
 @app.post("/predict", response_model=PredictResponse)
 def predict_machine_health(telemetry: SensorInput):
-    if not anomaly_detector.is_fitted:
-        bootstrap_models()
-
+    eng = get_ready_engine()
     history = repo.get_historical_readings(telemetry.machine_id, limit=20)
     current_dict = telemetry.model_dump()
+    # SensorInput has no failure_mode; preserve history labels only
     raw_list = history + [current_dict]
-
-    df_features = FeatureEngineer.process_telemetry(raw_list)
-    latest_row_df = df_features.tail(1)
-
-    df_anomaly = anomaly_detector.detect(latest_row_df)
-    is_anomaly = bool(df_anomaly.iloc[0]["is_anomaly"])
-    anomaly_score = float(df_anomaly.iloc[0]["anomaly_score"])
-
-    latest_feature_dict = df_anomaly.iloc[0].to_dict()
-    health_score, risk_level = HealthScoreCalculator.calculate(latest_feature_dict)
-
-    predictions, probabilities = classifier.predict(df_anomaly)
-    predicted_failure = predictions[0]
-    failure_probs = probabilities[0]
-
-    rul_hours = RULEstimator.estimate(health_score, latest_feature_dict)
+    result = eng.predict(raw_list, machine_id=telemetry.machine_id)
 
     return PredictResponse(
-        machine_id=telemetry.machine_id,
-        health_score=health_score,
-        risk_level=risk_level,
-        anomaly=is_anomaly,
-        anomaly_score=anomaly_score,
-        failure_type=predicted_failure,
-        failure_probabilities=failure_probs,
-        rul_hours=rul_hours,
+        machine_id=result.machine_id,
+        health_score=result.health_score,
+        risk_level=result.risk_level,
+        anomaly=result.is_anomaly,
+        anomaly_score=result.anomaly_score,
+        failure_type=result.failure_mode,
+        failure_probabilities=result.failure_probabilities,
+        rul_hours=result.rul_hours,
     )
 
 
 @app.get("/anomalies")
 def get_anomalies(machine_id: str, limit: int = 20):
-    if not anomaly_detector.is_fitted:
-        bootstrap_models()
-
+    eng = get_ready_engine()
     history = repo.get_historical_readings(machine_id, limit=limit)
     if not history:
         return []
 
     df_features = FeatureEngineer.process_telemetry(history)
-    df_anomalies = anomaly_detector.detect(df_features)
+    df_anomalies = eng.anomaly_detector.detect(df_features)
     anomalies_only = df_anomalies[df_anomalies["is_anomaly"] == True]
     return anomalies_only.to_dict(orient="records")
