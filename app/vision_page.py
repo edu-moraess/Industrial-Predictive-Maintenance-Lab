@@ -1,7 +1,4 @@
-"""
-Streamlit UI for Computer Vision Inspection.
-Independent from sensor ML. Image comparison works without YOLO.
-"""
+"""Computer Vision Inspection Lab UI — clean primary surface, diagnostics at bottom."""
 
 from __future__ import annotations
 
@@ -32,418 +29,312 @@ def _get_service(confidence: float) -> VisionInspectionService:
     return VisionInspectionService(confidence=confidence, detector=det)
 
 
-def _badge(ok: bool, label_ok: str = "available", label_bad: str = "unavailable") -> str:
-    if ok:
-        return f'<span class="badge badge-success">{label_ok}</span>'
-    return f'<span class="badge badge-warning">{label_bad}</span>'
+def _engine_label(env: dict) -> tuple[str, str]:
+    yolo = env["yolo_model"]["available"]
+    img = env["capabilities"]["image_upload"]
+    if yolo and img:
+        return "READY", "badge-success"
+    if img:
+        return "PARTIALLY AVAILABLE", "badge-warning"
+    return "OFFLINE", "badge-critical"
 
 
 def render_computer_vision() -> None:
+    env = get_vision_environment_status()
+    caps = env["capabilities"]
+    engine_txt, engine_badge = _engine_label(env)
+
     st.markdown(
-        """
+        f"""
         <div style="border-bottom:1px solid #2A2F38;padding-bottom:10px;margin-bottom:14px;">
             <h2 style="font-size:1.15rem;font-weight:600;margin:0;">COMPUTER VISION INSPECTION</h2>
             <p style="color:#9A9FA8;font-size:0.8rem;margin:4px 0 0 0;">
-                Experimental lab \u00b7 YOLO optional (COCO baseline) \u00b7 Not industrial certification
+                Industrial visual inspection laboratory \u00b7 Experimental \u00b7 Not defect certification
             </p>
+        </div>
+        <div class="ind-card" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;">
+            <div><div class="ind-card-header">VISION ENGINE</div>
+                <span class="badge {engine_badge}">{engine_txt}</span></div>
+            <div><div class="ind-card-header">MODEL</div>
+                <span style="color:#F2F2F2;font-size:0.9rem;">
+                {"YOLO baseline (COCO)" if env["yolo_model"]["available"] else "Detection offline"}</span></div>
+            <div><div class="ind-card-header">DEVICE</div>
+                <span style="color:#F2F2F2;font-size:0.9rem;">AUTO / CPU</span></div>
+            <div><div class="ind-card-header">BASELINE COMPARE</div>
+                <span class="badge {'badge-success' if caps['baseline_comparison'] else 'badge-warning'}">
+                {'ON' if caps['baseline_comparison'] else 'OFF'}</span></div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-
-    env = get_vision_environment_status()
-    caps = env["capabilities"]
-
-    with st.expander("Environment diagnostics (this Streamlit process)", expanded=not env["yolo_model"]["available"]):
-        st.code(f"Python: {env['python_executable']}\nVersion: {env['python_version']}")
-        st.markdown(
-            f"""
-            <div class="ind-card" style="font-size:0.85rem;line-height:1.7;">
-            NumPy { _badge(env['numpy']['available']) } {env['numpy'].get('version') or ''}<br/>
-            Pillow { _badge(env['pillow']['available']) } {env['pillow'].get('version') or ''}<br/>
-            OpenCV { _badge(env['opencv']['available']) } {env['opencv'].get('version') or ''}<br/>
-            Ultralytics { _badge(env['ultralytics']['available']) } {env['ultralytics'].get('version') or ''}<br/>
-            YOLO weights { _badge(env['yolo_model']['available'], 'loaded', 'not loaded') } {env['yolo_model'].get('name') or ''}<br/>
-            Image upload { _badge(caps['image_upload']) } \u00b7
-            Baseline compare { _badge(caps['baseline_comparison']) } \u00b7
-            Detection { _badge(caps['object_detection']) } \u00b7
-            Video { _badge(caps['video']) }
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if env["opencv"]["error"]:
-            st.caption(f"OpenCV detail: {env['opencv']['error']}")
-        if env["ultralytics"]["error"]:
-            st.caption(f"Ultralytics detail: {env['ultralytics']['error']}")
-        if env["yolo_model"]["error"] and not env["yolo_model"]["available"]:
-            st.caption(f"YOLO detail: {env['yolo_model']['error']}")
-        st.markdown("**Install into THIS interpreter:**")
-        st.code(env["install_hint"])
-
-    mode = st.radio(
-        "Input mode",
-        ["Image", "Video", "Camera"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="cv_input_mode",
+    st.caption(
+        "COCO baseline uses generic classes. Domain-trained weights are required for industrial component labels."
     )
 
     st.markdown("#### CONFIGURATION")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        conf = st.slider("Confidence threshold", 0.1, 0.9, DEFAULT_CONFIDENCE, 0.05, key="cv_conf")
+        conf = st.slider("Confidence", 0.1, 0.9, DEFAULT_CONFIDENCE, 0.05, key="cv_conf")
     with c2:
-        stride = st.select_slider(
-            "Frame sampling (video)", options=[1, 2, 5, 10], value=DEFAULT_FRAME_STRIDE, key="cv_stride"
-        )
+        stride = st.select_slider("Frame sampling", options=[1, 2, 5, 10], value=DEFAULT_FRAME_STRIDE, key="cv_stride")
     with c3:
-        use_tracking = st.checkbox("Tracking (video)", value=True, key="cv_track")
+        use_tracking = st.checkbox("Tracking", value=True, key="cv_track")
+    with c4:
+        show_rois = st.checkbox("Show ROI zones", value=False, key="cv_rois")
+
+    model_choice = st.radio(
+        "Vision model",
+        ["YOLO baseline", "Custom YOLO (coming soon)", "Segmentation (coming soon)"],
+        horizontal=True,
+        key="cv_model_choice",
+    )
+    if model_choice != "YOLO baseline":
+        st.caption("Only YOLO baseline is implemented in this lab version.")
 
     service = _get_service(conf)
 
-    st.markdown("#### VISION MODEL")
-    if service.model_available:
-        st.markdown(
-            f'<div class="ind-card"><span class="badge badge-success">YOLO AVAILABLE</span> '
-            f'<span style="color:#9A9FA8;margin-left:8px;">{service.model_status()}</span></div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <div class="ind-card">
-                <div class="ind-card-header">YOLO OPTIONAL \u2014 NOT LOADED</div>
-                <p style="color:#9A9FA8;font-size:0.85rem;">
-                    Object detection is offline. <strong>Baseline image comparison still works</strong>
-                    if Pillow or OpenCV is available.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
     st.markdown("#### INPUT")
+    mode = st.radio("Source", ["Image", "Video", "Camera"], horizontal=True, key="cv_input_mode")
+
     baseline_file = st.file_uploader(
-        "Optional reference (baseline) image",
+        "Reference image (optional baseline)",
         type=["jpg", "jpeg", "png", "webp"],
         key="cv_baseline",
     )
     baseline_bytes = baseline_file.getvalue() if baseline_file else None
 
-    if mode == "Camera":
-        st.markdown(
-            """
-            <div class="ind-card">
-                <div class="ind-card-header">BROWSER CAMERA (optional)</div>
-                <p style="color:#9A9FA8;font-size:0.85rem;">
-                    Uses Streamlit <code>st.camera_input</code> only \u2014 never OpenCV GUI / VideoCapture(0).
-                    If the browser blocks the camera, use <strong>Image</strong> upload instead.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    if mode == "Image":
         if not caps["image_upload"]:
-            st.warning("Cannot decode images: install Pillow or opencv-python-headless.")
+            st.warning("Image pipeline requires Pillow or OpenCV. See Advanced Diagnostics.")
+            _render_diagnostics(env)
+            return
+        up = st.file_uploader("Machine image", type=["jpg", "jpeg", "png", "webp", "bmp"], key="cv_image")
+        if up is None:
+            st.info("Upload a machine photo to run inspection.")
+            _render_diagnostics(env)
+            return
+        if os.path.splitext(up.name)[1].lower() not in SUPPORTED_IMAGE_EXT:
+            st.error("Unsupported image type.")
+            return
+        if st.button("Run Inspection", type="primary", key="cv_run_img"):
+            with st.spinner("Running visual inspection..."):
+                _run_image(service, up.getvalue(), baseline_bytes, show_rois)
+
+    elif mode == "Video":
+        up = st.file_uploader("Machine video", type=["mp4", "mov", "avi", "mkv", "webm"], key="cv_video")
+        if up is None:
+            st.info("Upload a video for temporal analysis.")
+            _render_diagnostics(env)
+            return
+        if not caps["video"]:
+            st.warning("Video requires OpenCV headless. See Advanced Diagnostics for setup.")
+            _render_diagnostics(env)
+            return
+        if os.path.splitext(up.name)[1].lower() not in SUPPORTED_VIDEO_EXT:
+            st.error("Unsupported video type.")
+            return
+        if st.button("Run Inspection", type="primary", key="cv_run_vid"):
+            path = save_upload_to_temp(up.getvalue(), os.path.splitext(up.name)[1].lower())
+            try:
+                with st.spinner("Analyzing sampled frames..."):
+                    _run_video(service, path, stride, use_tracking, baseline_bytes)
+            finally:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+    else:
+        st.caption("Browser camera via Streamlit — not OpenCV webcam.")
+        if not caps["image_upload"]:
+            st.warning("Cannot decode camera frames without Pillow/OpenCV.")
+            _render_diagnostics(env)
             return
         try:
-            cam = st.camera_input("Capture (browser permission required)")
-        except Exception as exc:  # noqa: BLE001
-            st.warning(f"Camera widget unavailable: {exc}")
-            st.info("Use Image mode to upload a photo.")
+            cam = st.camera_input("Snapshot")
+        except Exception:
+            st.info("Camera widget unavailable. Use Image upload.")
+            _render_diagnostics(env)
             return
         if cam is None:
-            st.caption("Snapshot unavailable until the browser provides a frame.")
+            st.caption("Waiting for browser snapshot.")
+            _render_diagnostics(env)
             return
         if st.button("Run Inspection", type="primary", key="cv_run_cam"):
             with st.spinner("Analyzing snapshot..."):
-                _run_image(service, cam.getvalue(), baseline_bytes)
-        return
+                _run_image(service, cam.getvalue(), baseline_bytes, show_rois)
 
-    if mode == "Image":
-        if not caps["image_upload"]:
-            st.error("Image pipeline unavailable. Install: python -m pip install pillow")
-            return
-        up = st.file_uploader(
-            "Upload machine photo",
-            type=["jpg", "jpeg", "png", "webp", "bmp"],
-            key="cv_image",
-        )
-        if up is None:
-            st.markdown(
-                """
-                <div class="ind-card" style="text-align:center;padding:20px;">
-                    <div class="ind-card-header">NO IMAGE</div>
-                    <p style="color:#9A9FA8;">Upload a photo to start visual inspection.</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            return
-        ext = os.path.splitext(up.name)[1].lower()
-        if ext not in SUPPORTED_IMAGE_EXT:
-            st.error("INVALID INPUT \u2014 unsupported image type.")
-            return
-        if st.button("Run Inspection", type="primary", key="cv_run_img"):
-            with st.spinner("Analyzing image..."):
-                _run_image(service, up.getvalue(), baseline_bytes)
-        return
-
-    # Video
-    up = st.file_uploader(
-        "Upload machine video",
-        type=["mp4", "mov", "avi", "mkv", "webm"],
-        key="cv_video",
-    )
-    if up is None:
-        st.markdown(
-            """
-            <div class="ind-card" style="text-align:center;padding:20px;">
-                <div class="ind-card-header">NO VIDEO</div>
-                <p style="color:#9A9FA8;">Upload a video for temporal analysis.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-    if not caps["video"]:
-        st.warning(
-            "Video needs OpenCV headless. "
-            "python -m pip uninstall opencv-python -y && "
-            "python -m pip install opencv-python-headless"
-        )
-        return
-    ext = os.path.splitext(up.name)[1].lower()
-    if ext not in SUPPORTED_VIDEO_EXT:
-        st.error("INVALID INPUT \u2014 unsupported video type.")
-        return
-    if st.button("Run Inspection", type="primary", key="cv_run_vid"):
-        path = save_upload_to_temp(up.getvalue(), ext)
-        try:
-            with st.spinner("Analyzing video (sampled frames)..."):
-                _run_video(service, path, stride, use_tracking, baseline_bytes)
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+    _render_diagnostics(env)
 
 
-def _run_image(service: VisionInspectionService, data: bytes, baseline: Optional[bytes]) -> None:
+def _run_image(service, data, baseline, show_rois) -> None:
     try:
-        report, original, annotated, diff = service.inspect_image(data, baseline)
+        report, original, annotated, diff, events, extra = service.inspect_image(
+            data, baseline, show_rois=show_rois
+        )
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc)
-        if "libGL" in msg:
-            st.warning(
-                "OpenCV GUI dependency detected (libGL). "
-                "Image inspection should use Pillow fallback after: "
-                "python -m pip uninstall opencv-python -y && "
-                "python -m pip install opencv-python-headless pillow"
-            )
-            st.caption(msg)
-        else:
-            st.error(f"Inspection failed: {msg}")
+        st.error("Inspection could not complete.")
+        st.caption(str(exc))
         return
 
-    st.success("Inspection completed.")
-    st.markdown("#### RESULT")
-    cols = st.columns(3 if diff is not None else 2)
+    st.markdown("#### INSPECTION RESULT")
+    n = 2 + (1 if diff is not None else 0)
+    cols = st.columns(n)
     cols[0].image(bgr_to_rgb(original), caption="ORIGINAL", use_container_width=True)
-    cols[1].image(bgr_to_rgb(annotated), caption="DETECTION / OVERLAY", use_container_width=True)
+    cols[1].image(bgr_to_rgb(annotated), caption="DETECTION OVERLAY", use_container_width=True)
     if diff is not None:
-        cols[2].image(
-            bgr_to_rgb(diff),
-            caption="VISUAL ANOMALY MAP (vs baseline)",
-            use_container_width=True,
-        )
-        st.caption("Relative difference to reference \u2014 not a mechanical failure diagnosis.")
+        cols[2].image(bgr_to_rgb(diff), caption="ANOMALY MAP", use_container_width=True)
 
-    _render_report_cards(report)
-    _render_class_charts(report)
-    _render_detection_table(report)
-    _render_context(report)
-
-
-def _run_video(
-    service: VisionInspectionService,
-    path: str,
-    stride: int,
-    use_tracking: bool,
-    baseline: Optional[bytes],
-) -> None:
-    try:
-        report, sample_o, sample_a, frame_results, trajectories = service.inspect_video(
-            path, stride=stride, use_tracking=use_tracking, baseline_bytes=baseline
-        )
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc)
-        if "libGL" in msg:
-            st.warning(
-                "Video needs OpenCV headless without libGL. "
-                "python -m pip uninstall opencv-python -y && "
-                "python -m pip install opencv-python-headless"
-            )
-        else:
-            st.error(f"Video inspection failed: {msg}")
-        return
-
-    st.success("Video analysis completed.")
-    st.markdown("#### RESULT")
-    if sample_o is not None and sample_a is not None:
-        c1, c2 = st.columns(2)
-        c1.image(bgr_to_rgb(sample_o), caption="SAMPLE FRAME (ORIGINAL)", use_container_width=True)
-        c2.image(bgr_to_rgb(sample_a), caption="SAMPLE FRAME (DETECTION)", use_container_width=True)
-
-    _render_report_cards(report)
-    vm = report.video_metrics or {}
-    st.markdown("#### VIDEO METRICS")
-    mcols = st.columns(4)
-    mcols[0].markdown(
-        f'<div class="ind-card"><div class="ind-card-header">DURATION</div>'
-        f'<div class="ind-card-value" style="font-size:1rem;">{vm.get("duration_s") if vm.get("duration_s") is not None else "N/A"} s</div></div>',
-        unsafe_allow_html=True,
-    )
-    mcols[1].markdown(
-        f'<div class="ind-card"><div class="ind-card-header">FPS</div>'
-        f'<div class="ind-card-value" style="font-size:1rem;">{vm.get("fps") if vm.get("fps") is not None else "N/A"}</div></div>',
-        unsafe_allow_html=True,
-    )
-    mcols[2].markdown(
-        f'<div class="ind-card"><div class="ind-card-header">FRAMES ANALYZED</div>'
-        f'<div class="ind-card-value" style="font-size:1rem;">{vm.get("frames_analyzed", "N/A")}</div></div>',
-        unsafe_allow_html=True,
-    )
-    mcols[3].markdown(
-        f'<div class="ind-card"><div class="ind-card-header">TRACK IDs</div>'
-        f'<div class="ind-card-value" style="font-size:1rem;">{vm.get("unique_track_ids", "N/A")}</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    series = vm.get("anomaly_series") or []
-    times = vm.get("anomaly_timestamps") or []
-    if series and times and len(series) == len(times):
-        st.markdown("#### VISUAL ANOMALY TIMELINE")
-        fig = go.Figure(
-            go.Scatter(x=times, y=series, mode="lines+markers", line=dict(color="#D4A84F", width=1.5))
-        )
-        fig.update_layout(xaxis_title="Time (s)", yaxis_title="Anomaly score", yaxis=dict(range=[0, 1]))
-        apply_industrial_plotly_theme(fig, height=240)
-        st.plotly_chart(fig, use_container_width=True)
-
-    if trajectories:
-        st.markdown("#### OBJECT TRAJECTORY (APPARENT MOTION)")
-        keys = list(trajectories.keys())
-        choice = st.selectbox("Object", keys, key="cv_traj_obj")
-        pts = trajectories[choice]
-        fig_t = go.Figure(
-            go.Scatter(
-                x=[p[1] for p in pts],
-                y=[p[2] for p in pts],
-                mode="lines+markers",
-                line=dict(color="#4CAF78", width=1.5),
-            )
-        )
-        fig_t.update_layout(xaxis_title="x (px)", yaxis_title="y (px)", yaxis=dict(autorange="reversed"))
-        apply_industrial_plotly_theme(fig_t, height=260)
-        st.plotly_chart(fig_t, use_container_width=True)
-
-    _render_class_charts(report)
-    _render_detection_table(report)
-    _render_context(report)
-
-
-def _render_report_cards(report) -> None:
-    st.markdown("#### VISUAL INSPECTION")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.markdown(
-        f'<div class="ind-card"><div class="ind-card-header">OBJECTS</div>'
-        f'<div class="ind-card-value">{report.objects_detected}</div></div>',
-        unsafe_allow_html=True,
-    )
-    avg = f"{report.average_confidence:.0%}" if report.average_confidence is not None else "N/A"
-    c2.markdown(
-        f'<div class="ind-card"><div class="ind-card-header">AVG CONFIDENCE</div>'
-        f'<div class="ind-card-value" style="font-size:1.2rem;">{avg}</div></div>',
-        unsafe_allow_html=True,
-    )
-    anom = f"{report.anomaly_score:.3f}" if report.anomaly_score is not None else "N/A"
-    c3.markdown(
-        f'<div class="ind-card"><div class="ind-card-header">VISUAL ANOMALY</div>'
-        f'<div class="ind-card-value" style="font-size:1.2rem;">{anom}</div></div>',
-        unsafe_allow_html=True,
-    )
-    c4.markdown(
-        f'<div class="ind-card"><div class="ind-card-header">STATUS</div>'
-        f'<div class="ind-card-value" style="font-size:1rem;">{report.visual_status}</div></div>',
-        unsafe_allow_html=True,
-    )
-    c5.markdown(
-        f'<div class="ind-card"><div class="ind-card-header">TIME</div>'
-        f'<div class="ind-card-value" style="font-size:1rem;">{report.processing_ms:.0f} ms</div></div>',
-        unsafe_allow_html=True,
-    )
-
-
-def _render_class_charts(report) -> None:
-    if not report.detections:
-        return
-    counts = Counter(d.class_name for d in report.detections)
-    confs = [d.confidence for d in report.detections]
-    g1, g2 = st.columns(2)
-    with g1:
-        st.markdown("#### DETECTIONS BY CLASS")
-        fig = go.Figure(go.Bar(x=list(counts.keys()), y=list(counts.values()), marker_color="#D4A84F"))
-        apply_industrial_plotly_theme(fig, height=220)
-        st.plotly_chart(fig, use_container_width=True)
-    with g2:
-        st.markdown("#### CONFIDENCE DISTRIBUTION")
-        fig2 = go.Figure(go.Histogram(x=confs, nbinsx=10, marker_color="#4CAF78"))
-        fig2.update_layout(xaxis_title="Confidence", yaxis_title="Count")
-        apply_industrial_plotly_theme(fig2, height=220)
-        st.plotly_chart(fig2, use_container_width=True)
-
-
-def _render_detection_table(report) -> None:
-    if not report.detections:
-        st.markdown(
-            """
-            <div class="ind-card">
-                <div class="ind-card-header">NO OBJECTS DETECTED</div>
-                <p style="color:#9A9FA8;">
-                    YOLO offline or no COCO objects in frame. Baseline comparison may still show anomaly map.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-    st.markdown("#### DETECTED OBJECTS")
-    rows = [
-        {
-            "class": d.class_name,
-            "confidence": d.confidence,
-            "track_id": d.track_id if d.track_id is not None else "\u2014",
-            "bbox": tuple(round(x, 1) for x in d.bbox_xyxy),
-        }
-        for d in report.detections[:40]
-    ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-
-
-def _render_context(report) -> None:
-    st.markdown("#### VISUAL ANALYSIS")
+    _metrics(report, extra.get("changed_area"))
+    _events(events)
+    if extra.get("roi_counts"):
+        st.caption(f"ROI hits: {extra['roi_counts']}")
+    _class_charts(report)
+    _det_table(report)
     st.markdown(
         f"""
         <div class="ind-card">
-            <p style="color:#F2F2F2;margin:0 0 8px 0;">{report.recommendation}</p>
-            <p style="color:#9A9FA8;font-size:0.8rem;margin:0;">
-                Method: {report.anomaly_method or "N/A"} \u00b7 Model: {report.model_name}
-            </p>
+            <div class="ind-card-header">INTERPRETATION</div>
+            <p style="color:#F2F2F2;margin:0;">{report.recommendation}</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
     for note in report.notes:
         st.caption(note)
+
+
+def _run_video(service, path, stride, use_tracking, baseline) -> None:
+    try:
+        report, so, sa, _fr, metrics, events, motion = service.inspect_video(
+            path, stride=stride, use_tracking=use_tracking, baseline_bytes=baseline
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.error("Video inspection could not complete.")
+        st.caption(str(exc))
+        return
+
+    st.markdown("#### INSPECTION RESULT")
+    if so is not None and sa is not None:
+        c1, c2 = st.columns(2)
+        c1.image(bgr_to_rgb(so), caption="SAMPLE FRAME", use_container_width=True)
+        c2.image(bgr_to_rgb(sa), caption="DETECTION OVERLAY", use_container_width=True)
+    if motion is not None:
+        st.image(bgr_to_rgb(motion), caption="MOTION HEATMAP (apparent motion, not thermal)", use_container_width=True)
+
+    _metrics(report, None)
+    mcols = st.columns(4)
+    mcols[0].metric("Frames analyzed", metrics.get("frames_analyzed", 0))
+    mcols[1].metric("Track IDs", metrics.get("unique_track_ids", 0))
+    mcols[2].metric("Duration s", metrics.get("duration_s") if metrics.get("duration_s") is not None else "—")
+    mcols[3].metric("FPS", metrics.get("fps") if metrics.get("fps") is not None else "—")
+
+    series = metrics.get("anomaly_series") or []
+    times = metrics.get("anomaly_timestamps") or []
+    if series and len(series) == len(times):
+        fig = go.Figure(go.Scatter(x=times, y=series, mode="lines+markers", line=dict(color="#D4A84F", width=1.5)))
+        fig.update_layout(xaxis_title="Time (s)", yaxis_title="Anomaly score", yaxis=dict(range=[0, 1]))
+        apply_industrial_plotly_theme(fig, height=220)
+        st.plotly_chart(fig, use_container_width=True)
+
+    traj = metrics.get("trajectories") or {}
+    if traj:
+        st.markdown("#### OBJECT TRAJECTORY")
+        key = st.selectbox("Track", list(traj.keys()), key="cv_traj")
+        pts = traj[key]
+        fig_t = go.Figure(
+            go.Scatter(x=[p[1] for p in pts], y=[p[2] for p in pts], mode="lines+markers", line=dict(color="#4CAF78"))
+        )
+        fig_t.update_layout(xaxis_title="x", yaxis_title="y", yaxis=dict(autorange="reversed"))
+        apply_industrial_plotly_theme(fig_t, height=240)
+        st.plotly_chart(fig_t, use_container_width=True)
+
+    _events(events)
+    _class_charts(report)
+    _det_table(report)
+
+
+def _metrics(report, changed_area) -> None:
+    st.markdown("#### METRICS")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Objects", report.objects_detected)
+    c2.metric(
+        "Mean conf.",
+        f"{report.average_confidence:.2f}" if report.average_confidence is not None else "—",
+    )
+    c3.metric(
+        "Anomaly",
+        f"{report.anomaly_score:.3f}" if report.anomaly_score is not None else "—",
+    )
+    c4.metric("Changed area", f"{changed_area:.1%}" if changed_area is not None else "—")
+    c5.metric("Time ms", f"{report.processing_ms:.0f}")
+    st.markdown(
+        f'<span class="badge badge-info">{report.visual_status}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def _events(events) -> None:
+    if not events:
+        return
+    st.markdown("#### VISUAL EVENTS")
+    for e in events:
+        st.markdown(
+            f"- **{e.event_type}** · severity `{e.severity}` · {e.evidence}"
+            + (f" · {e.detail}" if e.detail else "")
+        )
+
+
+def _class_charts(report) -> None:
+    if not report.detections:
+        return
+    counts = Counter(d.class_name for d in report.detections)
+    confs = [d.confidence for d in report.detections]
+    g1, g2 = st.columns(2)
+    with g1:
+        fig = go.Figure(go.Bar(x=list(counts.keys()), y=list(counts.values()), marker_color="#D4A84F"))
+        apply_industrial_plotly_theme(fig, height=200)
+        st.plotly_chart(fig, use_container_width=True)
+    with g2:
+        fig2 = go.Figure(go.Histogram(x=confs, nbinsx=10, marker_color="#4CAF78"))
+        apply_industrial_plotly_theme(fig2, height=200)
+        st.plotly_chart(fig2, use_container_width=True)
+
+
+def _det_table(report) -> None:
+    if not report.detections:
+        return
+    st.markdown("#### DETECTIONS")
+    st.dataframe(
+        [
+            {
+                "class": d.class_name,
+                "confidence": d.confidence,
+                "track_id": d.track_id if d.track_id is not None else "—",
+            }
+            for d in report.detections[:40]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _render_diagnostics(env: dict) -> None:
+    with st.expander("Advanced Diagnostics", expanded=False):
+        st.code(f"{env['python_executable']}\nPython {env['python_version']}")
+        st.write(
+            {
+                "numpy": env["numpy"],
+                "pillow": env["pillow"],
+                "opencv": {k: env["opencv"][k] for k in ("available", "version")},
+                "ultralytics": {k: env["ultralytics"][k] for k in ("available", "version")},
+                "yolo_model": env["yolo_model"],
+                "capabilities": env["capabilities"],
+            }
+        )
+        if env["opencv"].get("error"):
+            st.caption(env["opencv"]["error"])
+        if env["ultralytics"].get("error"):
+            st.caption(env["ultralytics"]["error"])
+        st.markdown("Setup (same interpreter as Streamlit):")
+        st.code(env["install_hint"])
