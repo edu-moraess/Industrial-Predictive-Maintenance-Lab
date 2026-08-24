@@ -10,8 +10,8 @@ from __future__ import annotations
 import io
 import os
 import tempfile
-from dataclasses import dataclass, field
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Generator, Optional, Tuple
 
 import numpy as np
 
@@ -23,8 +23,6 @@ SUPPORTED_VIDEO = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 
 @dataclass
 class ImagePayload:
-    """RGB uint8 array + metadata for UI."""
-
     rgb: np.ndarray
     width: int
     height: int
@@ -67,19 +65,23 @@ def load_image_from_bytes(data: bytes, filename: str = "upload") -> ImagePayload
 
     try:
         pil = Image.open(io.BytesIO(data))
+        pil.load()
         pil = ImageOps.exif_transpose(pil)
         mode_src = pil.mode
-        fmt = (pil.format or ext.replace(".", "").upper() or "UNKNOWN")
-        if pil.mode in ("RGBA", "LA", "P"):
+        fmt = pil.format or (ext.replace(".", "").upper() if ext else "UNKNOWN")
+
+        if pil.mode == "RGBA":
+            background = Image.new("RGB", pil.size, (0, 0, 0))
+            background.paste(pil, mask=pil.split()[3])
+            pil = background
+        elif pil.mode == "LA":
             pil = pil.convert("RGBA")
             background = Image.new("RGB", pil.size, (0, 0, 0))
-            if pil.mode == "RGBA":
-                background.paste(pil, mask=pil.split()[-1])
-            else:
-                background.paste(pil)
+            background.paste(pil, mask=pil.split()[3])
             pil = background
-        else:
+        elif pil.mode != "RGB":
             pil = pil.convert("RGB")
+
         rgb = np.asarray(pil, dtype=np.uint8)
         if rgb.ndim != 3 or rgb.shape[2] != 3:
             raise InputError("Unable to read image. Unsupported pixel layout.")
@@ -95,11 +97,10 @@ def load_image_from_bytes(data: bytes, filename: str = "upload") -> ImagePayload
     except InputError:
         raise
     except Exception as exc:
-        raise InputError("Unable to read image. Please try JPG, PNG, WEBP or BMP.") from expc if False else exc  # noqa: E501
+        raise InputError("Unable to read image. Please try JPG, PNG, WEBP or BMP.") from exc
 
 
 def load_image_from_upload(uploaded_file) -> ImagePayload:
-    """Streamlit UploadedFile or file-like with .getvalue/.read and .name."""
     if uploaded_file is None:
         raise InputError("Unable to read image. No file provided.")
     name = getattr(uploaded_file, "name", "upload.jpg")
@@ -195,7 +196,6 @@ def load_video_from_upload(uploaded_file) -> VideoPayload:
 def iter_video_frames(
     path: str, stride: int = 5
 ) -> Generator[Tuple[int, float, np.ndarray], None, None]:
-    """Yield (frame_index, timestamp_s, BGR uint8). Requires OpenCV."""
     if not opencv_available():
         raise InputError("Video processing unavailable.")
     import cv2
@@ -212,8 +212,7 @@ def iter_video_frames(
             if not ok:
                 break
             if idx % stride == 0:
-                ts = idx / fps
-                yield idx, ts, frame
+                yield idx, idx / fps, frame
             idx += 1
     finally:
         cap.release()
