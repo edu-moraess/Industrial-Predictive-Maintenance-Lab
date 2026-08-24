@@ -23,7 +23,6 @@ from vision.visualization import bgr_to_rgb
 
 @st.cache_resource
 def _cached_detector() -> ObjectDetector:
-    """Load YOLO once for the Streamlit process."""
     return ObjectDetector()
 
 
@@ -39,7 +38,7 @@ def render_computer_vision() -> None:
         <div style="border-bottom:1px solid #2A2F38;padding-bottom:10px;margin-bottom:14px;">
             <h2 style="font-size:1.15rem;font-weight:600;margin:0;">COMPUTER VISION INSPECTION</h2>
             <p style="color:#9A9FA8;font-size:0.8rem;margin:4px 0 0 0;">
-                Experimental visual inspection laboratory · Baseline YOLO (COCO) · Not industrial certification
+                Experimental visual inspection laboratory \u00b7 Baseline YOLO (COCO) \u00b7 Not industrial certification
             </p>
         </div>
         """,
@@ -82,10 +81,11 @@ def render_computer_vision() -> None:
                 <div class="ind-card-header">VISION MODEL NOT AVAILABLE</div>
                 <p style="color:#9A9FA8;font-size:0.85rem;">{service.model_status()}</p>
                 <p style="color:#9A9FA8;font-size:0.8rem;margin:8px 0 0 0;">
-                    ultralytics={deps['ultralytics']} · opencv={deps['opencv']}<br/>
-                    Install in the same Python env as Streamlit:<br/>
-                    <code>pip install ultralytics opencv-python-headless</code><br/>
-                    Then restart Streamlit. Baseline comparison still works without YOLO.
+                    ultralytics={deps['ultralytics']} \u00b7 opencv={deps['opencv']} \u00b7 pillow={deps['pillow']}<br/><br/>
+                    <strong>If you see libGL.so.1 errors:</strong><br/>
+                    <code>pip uninstall opencv-python opencv-contrib-python -y</code><br/>
+                    <code>pip install opencv-python-headless ultralytics pillow</code><br/><br/>
+                    Then <strong>restart Streamlit</strong>. Image baseline comparison works with Pillow even without YOLO.
                 </p>
             </div>
             """,
@@ -105,7 +105,7 @@ def render_computer_vision() -> None:
             """
             <div class="ind-card">
                 <div class="ind-card-header">CAMERA INPUT</div>
-                <p style="color:#9A9FA8;">Optional / environment dependent.</p>
+                <p style="color:#9A9FA8;">Optional / environment dependent. Prefer Image upload if camera fails.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -135,7 +135,7 @@ def render_computer_vision() -> None:
             return
         ext = os.path.splitext(up.name)[1].lower()
         if ext not in SUPPORTED_IMAGE_EXT:
-            st.error("INVALID INPUT — unsupported image type.")
+            st.error("INVALID INPUT \u2014 unsupported image type.")
             return
         if st.button("Run Inspection", type="primary", key="cv_run_img"):
             with st.spinner("Analyzing image..."):
@@ -160,8 +160,13 @@ def render_computer_vision() -> None:
         return
     ext = os.path.splitext(up.name)[1].lower()
     if ext not in SUPPORTED_VIDEO_EXT:
-        st.error("INVALID INPUT — unsupported video type.")
+        st.error("INVALID INPUT \u2014 unsupported video type.")
         return
+    if not deps["opencv"]:
+        st.warning(
+            "Video analysis needs OpenCV. Fix libGL with: "
+            "`pip uninstall opencv-python -y && pip install opencv-python-headless`"
+        )
     if st.button("Run Inspection", type="primary", key="cv_run_vid"):
         path = save_upload_to_temp(up.getvalue(), ext)
         try:
@@ -178,7 +183,17 @@ def _run_image(service: VisionInspectionService, data: bytes, baseline: Optional
     try:
         report, original, annotated, diff = service.inspect_image(data, baseline)
     except Exception as exc:  # noqa: BLE001
-        st.error(f"Inspection failed: {exc}")
+        msg = str(exc)
+        st.error(f"Inspection failed: {msg}")
+        if "libGL" in msg:
+            st.info(
+                "libGL fix:\n"
+                "```\n"
+                "pip uninstall opencv-python opencv-contrib-python -y\n"
+                "pip install opencv-python-headless ultralytics pillow\n"
+                "```\n"
+                "Then restart Streamlit. Or use **Image** upload with Pillow-only path."
+            )
         return
 
     st.success("Inspection completed.")
@@ -192,7 +207,9 @@ def _run_image(service: VisionInspectionService, data: bytes, baseline: Optional
             caption="VISUAL ANOMALY MAP (vs baseline)",
             use_container_width=True,
         )
-        st.caption("Anomaly map shows relative difference to the reference image — not a mechanical failure label.")
+        st.caption(
+            "Anomaly map shows relative difference to the reference image \u2014 not a mechanical failure label."
+        )
 
     _render_report_cards(report)
     _render_class_charts(report)
@@ -212,7 +229,12 @@ def _run_video(
             path, stride=stride, use_tracking=use_tracking, baseline_bytes=baseline
         )
     except Exception as exc:  # noqa: BLE001
-        st.error(f"Video inspection failed: {exc}")
+        msg = str(exc)
+        st.error(f"Video inspection failed: {msg}")
+        if "libGL" in msg:
+            st.info(
+                "pip uninstall opencv-python -y && pip install opencv-python-headless && restart Streamlit"
+            )
         return
 
     st.success("Video analysis completed.")
@@ -252,7 +274,6 @@ def _run_video(
     times = vm.get("anomaly_timestamps") or []
     if series and times and len(series) == len(times):
         st.markdown("#### VISUAL ANOMALY TIMELINE")
-        st.caption("Heuristic difference vs baseline/first frame — not a calibrated defect score.")
         fig = go.Figure(
             go.Scatter(x=times, y=series, mode="lines+markers", line=dict(color="#D4A84F", width=1.5))
         )
@@ -262,7 +283,6 @@ def _run_video(
 
     if trajectories:
         st.markdown("#### OBJECT TRAJECTORY (APPARENT MOTION)")
-        st.caption("Pixel-space path from tracking. Not physical vibration.")
         keys = list(trajectories.keys())
         choice = st.selectbox("Object", keys, key="cv_traj_obj")
         pts = trajectories[choice]
@@ -320,17 +340,10 @@ def _render_class_charts(report) -> None:
         return
     counts = Counter(d.class_name for d in report.detections)
     confs = [d.confidence for d in report.detections]
-
     g1, g2 = st.columns(2)
     with g1:
         st.markdown("#### DETECTIONS BY CLASS")
-        fig = go.Figure(
-            go.Bar(
-                x=list(counts.keys()),
-                y=list(counts.values()),
-                marker_color="#D4A84F",
-            )
-        )
+        fig = go.Figure(go.Bar(x=list(counts.keys()), y=list(counts.values()), marker_color="#D4A84F"))
         apply_industrial_plotly_theme(fig, height=220)
         st.plotly_chart(fig, use_container_width=True)
     with g2:
@@ -347,23 +360,22 @@ def _render_detection_table(report) -> None:
             """
             <div class="ind-card">
                 <div class="ind-card-header">NO OBJECTS DETECTED</div>
-                <p style="color:#9A9FA8;">Try another image/frame, lower confidence, or use baseline comparison.</p>
+                <p style="color:#9A9FA8;">Try another image, lower confidence, or use baseline comparison.</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
         return
     st.markdown("#### DETECTED OBJECTS")
-    rows = []
-    for d in report.detections[:40]:
-        rows.append(
-            {
-                "class": d.class_name,
-                "confidence": d.confidence,
-                "track_id": d.track_id if d.track_id is not None else "—",
-                "bbox": tuple(round(x, 1) for x in d.bbox_xyxy),
-            }
-        )
+    rows = [
+        {
+            "class": d.class_name,
+            "confidence": d.confidence,
+            "track_id": d.track_id if d.track_id is not None else "\u2014",
+            "bbox": tuple(round(x, 1) for x in d.bbox_xyxy),
+        }
+        for d in report.detections[:40]
+    ]
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
@@ -374,7 +386,7 @@ def _render_context(report) -> None:
         <div class="ind-card">
             <p style="color:#F2F2F2;margin:0 0 8px 0;">{report.recommendation}</p>
             <p style="color:#9A9FA8;font-size:0.8rem;margin:0;">
-                Method: {report.anomaly_method or "N/A"} · Model: {report.model_name}
+                Method: {report.anomaly_method or "N/A"} \u00b7 Model: {report.model_name}
             </p>
         </div>
         """,
@@ -382,13 +394,3 @@ def _render_context(report) -> None:
     )
     for note in report.notes:
         st.caption(note)
-    st.markdown(
-        """
-        <p style="color:#9A9FA8;font-size:0.75rem;">
-        Language policy: detections are <strong>DETECTED</strong> objects from the vision model.
-        Visual anomaly scores are <strong>INFERRED</strong> heuristics vs baseline.
-        Nothing here is a <strong>CONFIRMED</strong> industrial defect diagnosis.
-        </p>
-        """,
-        unsafe_allow_html=True,
-    )

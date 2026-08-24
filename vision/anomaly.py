@@ -1,9 +1,5 @@
 """
-Experimental visual anomaly vs baseline.
-
-Primary metric: mean absolute difference on normalized grayscale.
-Secondary: simple structural similarity (OpenCV-only implementation).
-HEURISTIC only — not a trained industrial defect classifier.
+Experimental visual anomaly vs baseline (OpenCV or pure NumPy/Pillow path).
 """
 
 from __future__ import annotations
@@ -12,17 +8,33 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from vision.model_loader import opencv_available
+
 METHOD_NAME = "baseline_absdiff+ssim (heuristic)"
 
 
 def _to_gray_u8(img: np.ndarray, size: Tuple[int, int] = (256, 256)) -> np.ndarray:
-    import cv2
-
     if img.ndim == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # BGR weights approx
+        gray = (
+            0.114 * img[:, :, 0].astype(np.float32)
+            + 0.587 * img[:, :, 1].astype(np.float32)
+            + 0.299 * img[:, :, 2].astype(np.float32)
+        ).astype(np.uint8)
     else:
-        gray = img
-    return cv2.resize(gray, size, interpolation=cv2.INTER_AREA)
+        gray = img.astype(np.uint8)
+
+    h, w = gray.shape[:2]
+    th, tw = size[1], size[0]
+    if opencv_available():
+        import cv2
+
+        return cv2.resize(gray, (tw, th), interpolation=cv2.INTER_AREA)
+
+    # nearest/bilinear via simple block (coarse but dependency-free)
+    ys = (np.linspace(0, h - 1, th)).astype(np.int32)
+    xs = (np.linspace(0, w - 1, tw)).astype(np.int32)
+    return gray[ys][:, xs]
 
 
 def _to_gray_f32(img: np.ndarray, size: Tuple[int, int] = (256, 256)) -> np.ndarray:
@@ -30,7 +42,6 @@ def _to_gray_f32(img: np.ndarray, size: Tuple[int, int] = (256, 256)) -> np.ndar
 
 
 def _ssim(a: np.ndarray, b: np.ndarray) -> float:
-    """Lightweight SSIM on float images in [0,1]."""
     C1 = 0.01 ** 2
     C2 = 0.03 ** 2
     mu_a = a.mean()
@@ -47,9 +58,6 @@ def baseline_anomaly_score(
     current_bgr: np.ndarray,
     baseline_bgr: Optional[np.ndarray],
 ) -> Tuple[Optional[float], str]:
-    """
-    score in [0,1]: 0 ~ similar to baseline, 1 ~ strong visual deviation.
-    """
     if baseline_bgr is None:
         return None, "no baseline provided"
 
@@ -57,7 +65,6 @@ def baseline_anomaly_score(
     b = _to_gray_f32(baseline_bgr)
     absdiff = float(np.abs(a - b).mean())
     ssim = _ssim(a, b)
-    # Combine: high absdiff or low SSIM => higher anomaly
     score = float(np.clip(0.6 * (absdiff * 4.0) + 0.4 * (1.0 - ssim), 0.0, 1.0))
     return round(score, 4), METHOD_NAME
 
@@ -66,14 +73,21 @@ def difference_map(
     current_bgr: np.ndarray,
     baseline_bgr: np.ndarray,
 ) -> np.ndarray:
-    """BGR heatmap of absolute difference (fixed 256 canvas, for display)."""
-    import cv2
-
     a = _to_gray_f32(current_bgr)
     b = _to_gray_f32(baseline_bgr)
     d = np.abs(a - b)
     d_u8 = (np.clip(d / (d.max() + 1e-6), 0, 1) * 255).astype(np.uint8)
-    return cv2.applyColorMap(d_u8, cv2.COLORMAP_INFERNO)
+
+    if opencv_available():
+        import cv2
+
+        return cv2.applyColorMap(d_u8, cv2.COLORMAP_INFERNO)
+
+    # Simple 3-channel heat without OpenCV colormap
+    hmap = np.zeros((*d_u8.shape, 3), dtype=np.uint8)
+    hmap[:, :, 2] = d_u8  # red channel
+    hmap[:, :, 1] = (d_u8.astype(np.uint16) // 2).astype(np.uint8)
+    return hmap
 
 
 def changed_area_ratio(
@@ -81,7 +95,6 @@ def changed_area_ratio(
     baseline_bgr: np.ndarray,
     threshold: float = 0.15,
 ) -> Optional[float]:
-    """Fraction of pixels with absdiff above threshold (0-1)."""
     a = _to_gray_f32(current_bgr)
     b = _to_gray_f32(baseline_bgr)
     mask = np.abs(a - b) > threshold
