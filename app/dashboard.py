@@ -1,9 +1,12 @@
 """
-Legacy entry: streamlit run app/dashboard.py
+Industrial Predictive Maintenance Lab — Streamlit entry.
 
-Preferred entry (multipage with Computer Vision page):
+Works with either:
 
+    streamlit run app/dashboard.py
     streamlit run Home.py
+
+Computer Vision is always reachable from this file via top-level tabs.
 """
 
 from __future__ import annotations
@@ -18,17 +21,24 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 
 from app.styles import INDUSTRIAL_THEME_CSS
-from app.operations_page import render_operations
 
 st.set_page_config(
-    page_title="Industrial Operations Center",
+    page_title="Industrial Predictive Maintenance Lab",
     page_icon="\u2699\ufe0f",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 st.markdown(INDUSTRIAL_THEME_CSS, unsafe_allow_html=True)
 
-st.info(
-    "For **Computer Vision** page navigation, run from repo root: `streamlit run Home.py`"
-)
-render_operations()
+# Top-level module switch — visible without multipage / Home.py
+tab_ops, tab_cv = st.tabs(["Operations", "Computer Vision"])
+
+with tab_ops:
+    from app.operations_page import render_operations
+
+    render_operations()
+
+with tab_cv:
+    from app.vision_page import render_computer_vision
+
+    render_computer_vision()
