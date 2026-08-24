@@ -4,14 +4,21 @@ Industrial Predictive Maintenance Lab — Streamlit Control Center.
 Telemetry is generated from the official VirtualMachine simulator.
 Health / anomaly / RUL values shown here are provisional simulation
 outputs for the UI lab. Production-grade inference is available via
-the FastAPI /predict endpoint (FeatureEngineer → IsolationForest →
-RandomForest → HealthScore → RUL).
+the FastAPI /predict endpoint.
 """
 
 from __future__ import annotations
 
+import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List
+
+# Ensure repository root is on sys.path so `from app.styles` works when
+# Streamlit runs this file as a script (script dir is app/, not project root).
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import numpy as np
 import plotly.graph_objects as go
@@ -25,7 +32,7 @@ from simulator.machine import VirtualMachine
 
 st.set_page_config(
     page_title="Industrial Predictive Maintenance",
-    page_icon="⚙️",
+    page_icon="\u2699\ufe0f",
     layout="wide",
     initial_sidebar_state="expanded",
 )
